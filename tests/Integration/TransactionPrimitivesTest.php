@@ -184,11 +184,11 @@ describe('MySQL row locks', function (): void {
         mysqlInsertItem($this->connection, 1, 'first');
 
         $this->connection->beginTransaction();
-        new MySqlQueryBuilder($this->connection)->table('primitives_items')->where(
-            'id',
-            '=',
-            1
-        )->lockForUpdate()->get();
+        new MySqlQueryBuilder($this->connection)
+            ->table('primitives_items')
+            ->where('id', '=', 1)
+            ->lockForUpdate()
+            ->get();
 
         $contend = fn () => $this->contender->transaction(
             fn (): array => new MySqlQueryBuilder($this->contender)
@@ -211,9 +211,11 @@ describe('MySQL row locks', function (): void {
         new MySqlQueryBuilder($this->connection)->table('primitives_items')->sharedLock()->get();
 
         $shared = $this->contender->transaction(
-            fn (): array => new MySqlQueryBuilder($this->contender)->table(
-                'primitives_items'
-            )->sharedLock()->noWait()->get(),
+            fn (): array => new MySqlQueryBuilder($this->contender)
+                ->table('primitives_items')
+                ->sharedLock()
+                ->noWait()
+                ->get(),
         );
         $this->connection->rollback();
 
