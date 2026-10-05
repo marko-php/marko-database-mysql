@@ -12,10 +12,10 @@ use Marko\Database\Connection\StatementInterface;
 use Marko\Database\Connection\TransactionInterface;
 use Marko\Database\Exceptions\TransactionException;
 use Marko\Database\MySql\Exceptions\ConnectionException;
+use Override;
 use PDO;
 use PDOException;
 use PDOStatement;
-use Override;
 use Throwable;
 
 class MySqlConnection implements ConnectionInterface, TransactionInterface, ResettableInterface

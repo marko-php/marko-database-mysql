@@ -53,8 +53,12 @@ beforeEach(function (): void {
 
     $this->observer = new MySqlConnection($config);
     $this->observer->execute('DROP TABLE IF EXISTS shared_accounts, shared_audit_entries');
-    $this->observer->execute('CREATE TABLE shared_accounts (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL)');
-    $this->observer->execute('CREATE TABLE shared_audit_entries (id INT AUTO_INCREMENT PRIMARY KEY, message VARCHAR(255) NOT NULL)');
+    $this->observer->execute(
+        'CREATE TABLE shared_accounts (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL)',
+    );
+    $this->observer->execute(
+        'CREATE TABLE shared_audit_entries (id INT AUTO_INCREMENT PRIMARY KEY, message VARCHAR(255) NOT NULL)',
+    );
 });
 
 afterEach(function (): void {
