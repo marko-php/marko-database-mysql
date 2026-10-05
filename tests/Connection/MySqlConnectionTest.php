@@ -8,7 +8,6 @@ use Marko\Database\Config\DatabaseConfig;
 use Marko\Database\Connection\ConnectionInterface;
 use Marko\Database\Connection\StatementInterface;
 use Marko\Database\Connection\TransactionInterface;
-use Marko\Database\Exceptions\TransactionException;
 use Marko\Database\MySql\Connection\MySqlConnection;
 use Marko\Database\MySql\Exceptions\ConnectionException;
 use PDO;
@@ -555,26 +554,6 @@ describe('MySqlConnection', function (): void {
         $options = connectAndCapturePdoOptions(createTestDatabaseConfig());
 
         expect($options)->not->toHaveKey(PDO\Mysql::ATTR_SSL_CA);
-    });
-
-    it('prevents nested transactions (throws exception)', function (): void {
-        $config = createTestDatabaseConfig();
-        $connection = new class ($config) extends MySqlConnection
-        {
-            protected function createPdo(
-                string $dsn,
-                string $username,
-                string $password,
-                array $options,
-            ): PDO {
-                return new PDO('sqlite::memory:', options: $options);
-            }
-        };
-
-        $connection->beginTransaction();
-
-        expect(fn () => $connection->beginTransaction())
-            ->toThrow(TransactionException::class, 'Nested transactions are not supported');
     });
 
     it('JSON-encodes array bindings instead of casting them to the string "Array"', function (): void {

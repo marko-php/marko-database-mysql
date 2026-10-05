@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace Marko\Database\MySql\Query;
 
 use Marko\Database\Connection\ConnectionInterface;
+use Marko\Database\Connection\TransactionInterface;
 use Marko\Database\Exceptions\InvalidColumnException;
+use Marko\Database\Exceptions\LockException;
 use Marko\Database\Exceptions\UnionShapeMismatchException;
+use Marko\Database\Exceptions\UpsertException;
 use Marko\Database\Query\IdentifierValidator;
 use Marko\Database\Query\JsonPathParser;
 use Marko\Database\Query\QueryBuilderInterface;
+use Marko\Database\Query\UpsertValidator;
 
 class MySqlQueryBuilder implements QueryBuilderInterface
 {
@@ -95,6 +99,15 @@ class MySqlQueryBuilder implements QueryBuilderInterface
      * @var list<array{expression: string, bindings: array<int, mixed>}>
      */
     private array $rawWheres = [];
+
+    /**
+     * Row lock requested with lockForUpdate() ('update') or sharedLock() ('share').
+     */
+    private ?string $lockMode = null;
+
+    private bool $skipLocked = false;
+
+    private bool $noWait = false;
 
     /**
      * @var array<int, mixed>
@@ -194,6 +207,8 @@ class MySqlQueryBuilder implements QueryBuilderInterface
     public function compileSubquery(
         array &$bindings,
     ): string {
+        $this->assertNotLocked('union()');
+
         $savedBindings = $this->bindings;
         $this->bindings = [];
         $sql = $this->buildSelectSql();
@@ -523,6 +538,8 @@ class MySqlQueryBuilder implements QueryBuilderInterface
     public function get(): array
     {
         if (!empty($this->unions)) {
+            $this->assertNotLocked('union()');
+
             return $this->executeUnion();
         }
 
@@ -615,6 +632,8 @@ class MySqlQueryBuilder implements QueryBuilderInterface
 
     public function count(?string $column = null): int
     {
+        $this->assertNotLocked('count()');
+
         $expr = $column !== null
             ? 'COUNT(' . $this->quoteIdentifier($column) . ') as aggregate'
             : 'COUNT(*) as aggregate';
@@ -627,6 +646,8 @@ class MySqlQueryBuilder implements QueryBuilderInterface
      */
     public function min(string $column): int|float|null
     {
+        $this->assertNotLocked('min()');
+
         if (!IdentifierValidator::isValidIdentifier($column)) {
             throw InvalidColumnException::invalidColumn($column);
         }
@@ -639,6 +660,8 @@ class MySqlQueryBuilder implements QueryBuilderInterface
      */
     public function max(string $column): int|float|null
     {
+        $this->assertNotLocked('max()');
+
         if (!IdentifierValidator::isValidIdentifier($column)) {
             throw InvalidColumnException::invalidColumn($column);
         }
@@ -651,6 +674,8 @@ class MySqlQueryBuilder implements QueryBuilderInterface
      */
     public function sum(string $column): int|float|null
     {
+        $this->assertNotLocked('sum()');
+
         if (!IdentifierValidator::isValidIdentifier($column)) {
             throw InvalidColumnException::invalidColumn($column);
         }
@@ -663,6 +688,8 @@ class MySqlQueryBuilder implements QueryBuilderInterface
      */
     public function avg(string $column): int|float|null
     {
+        $this->assertNotLocked('avg()');
+
         if (!IdentifierValidator::isValidIdentifier($column)) {
             throw InvalidColumnException::invalidColumn($column);
         }
@@ -675,6 +702,66 @@ class MySqlQueryBuilder implements QueryBuilderInterface
         array $bindings = [],
     ): array {
         return $this->connection->query($sql, $bindings);
+    }
+
+    public function lockForUpdate(): static
+    {
+        $this->lockMode = 'update';
+
+        return $this;
+    }
+
+    public function sharedLock(): static
+    {
+        $this->lockMode = 'share';
+
+        return $this;
+    }
+
+    public function skipLocked(): static
+    {
+        $this->skipLocked = true;
+
+        return $this;
+    }
+
+    public function noWait(): static
+    {
+        $this->noWait = true;
+
+        return $this;
+    }
+
+    /**
+     * @throws InvalidColumnException|UpsertException
+     */
+    public function upsert(
+        array $rows,
+        array $uniqueBy,
+        ?array $update = null,
+    ): int {
+        $updateColumns = UpsertValidator::validate($rows, $uniqueBy, $update);
+        $rows = array_values($rows);
+        $columns = array_map('strval', array_keys($rows[0]));
+
+        $bindings = [];
+        foreach ($rows as $row) {
+            foreach ($row as $value) {
+                $bindings[] = $value;
+            }
+        }
+
+        $placeholderRow = '(' . implode(', ', array_fill(0, count($columns), '?')) . ')';
+
+        $sql = sprintf(
+            'INSERT INTO %s (%s) VALUES %s %s',
+            $this->quoteIdentifier($this->table),
+            implode(', ', array_map(fn (string $column): string => $this->quoteIdentifier($column), $columns)),
+            implode(', ', array_fill(0, count($rows), $placeholderRow)),
+            $this->buildUpsertConflictClause(array_values($uniqueBy), $updateColumns),
+        );
+
+        return $this->connection->execute($sql, $bindings);
     }
 
     /**
@@ -878,6 +965,7 @@ class MySqlQueryBuilder implements QueryBuilderInterface
         $sql .= $this->buildHavingClause();
         $sql .= $this->buildOrderByClause();
         $sql .= $this->buildLimitOffsetClause();
+        $sql .= $this->buildLockClause();
 
         return $sql;
     }
@@ -1085,5 +1173,112 @@ class MySqlQueryBuilder implements QueryBuilderInterface
         }
 
         return $sql;
+    }
+
+    /**
+     * MySQL resolves the conflict against whichever unique index or primary
+     * key the row violates, so $uniqueBy only shapes the default update list.
+     * VALUES(col) is used (not the 8.0.19 row alias) because MariaDB only
+     * supports VALUES(). An empty update list compiles to a no-op assignment
+     * on the first conflict column, never INSERT IGNORE, so unrelated errors
+     * (bad data, other constraint violations) still surface.
+     *
+     * @param list<string> $uniqueBy
+     * @param list<string> $updateColumns
+     */
+    private function buildUpsertConflictClause(
+        array $uniqueBy,
+        array $updateColumns,
+    ): string {
+        if ($updateColumns === []) {
+            $column = $this->quoteIdentifier($uniqueBy[0]);
+
+            return "ON DUPLICATE KEY UPDATE $column = $column";
+        }
+
+        $assignments = array_map(
+            fn (string $column): string => sprintf(
+                '%s = VALUES(%s)',
+                $this->quoteIdentifier($column),
+                $this->quoteIdentifier($column),
+            ),
+            $updateColumns,
+        );
+
+        return 'ON DUPLICATE KEY UPDATE ' . implode(', ', $assignments);
+    }
+
+    /**
+     * Compile the row-lock clause, appended after LIMIT/OFFSET.
+     *
+     * A shared lock compiles to LOCK IN SHARE MODE (MySQL and MariaDB), or to
+     * FOR SHARE when a modifier is set, because LOCK IN SHARE MODE accepts no
+     * SKIP LOCKED / NOWAIT (FOR SHARE needs MySQL 8.0+).
+     *
+     * @throws LockException
+     */
+    private function buildLockClause(): string
+    {
+        $modifier = $this->buildLockModifier();
+
+        if ($this->lockMode === null) {
+            return '';
+        }
+
+        $this->assertLockInTransaction();
+
+        if ($this->lockMode === 'update') {
+            return ' FOR UPDATE' . $modifier;
+        }
+
+        return $modifier === '' ? ' LOCK IN SHARE MODE' : ' FOR SHARE' . $modifier;
+    }
+
+    /**
+     * @throws LockException
+     */
+    private function buildLockModifier(): string
+    {
+        if ($this->skipLocked && $this->noWait) {
+            throw LockException::conflictingModifiers();
+        }
+
+        if ($this->lockMode === null && $this->skipLocked) {
+            throw LockException::modifierWithoutLock('skipLocked');
+        }
+
+        if ($this->lockMode === null && $this->noWait) {
+            throw LockException::modifierWithoutLock('noWait');
+        }
+
+        return match (true) {
+            $this->skipLocked => ' SKIP LOCKED',
+            $this->noWait => ' NOWAIT',
+            default => '',
+        };
+    }
+
+    /**
+     * A lock taken outside a transaction is released as soon as the SELECT
+     * finishes, which is almost always a bug.
+     *
+     * @throws LockException
+     */
+    private function assertLockInTransaction(): void
+    {
+        if (!$this->connection instanceof TransactionInterface || !$this->connection->inTransaction()) {
+            throw LockException::outsideTransaction($this->table);
+        }
+    }
+
+    /**
+     * @throws LockException
+     */
+    private function assertNotLocked(
+        string $operation,
+    ): void {
+        if ($this->lockMode !== null) {
+            throw LockException::unsupportedOperation($operation);
+        }
     }
 }
