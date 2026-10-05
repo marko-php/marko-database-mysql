@@ -7,6 +7,7 @@ namespace Marko\Database\MySql\Tests\Sql;
 use Marko\Database\Diff\SchemaDiff;
 use Marko\Database\Diff\SqlGeneratorInterface;
 use Marko\Database\Diff\TableDiff;
+use Marko\Database\Exceptions\MigrationException;
 use Marko\Database\MySql\Sql\MySqlGenerator;
 use Marko\Database\Schema\Column;
 use Marko\Database\Schema\ForeignKey;
@@ -84,6 +85,37 @@ describe('MySqlGenerator', function (): void {
         $sql = $generator->generateModifyColumn('users', $newColumn, $oldColumn);
 
         expect($sql)->toBe('ALTER TABLE `users` MODIFY COLUMN `name` VARCHAR(255) NOT NULL');
+    });
+
+    it('throws when adding a partial index on mysql', function (): void {
+        $index = new Index(name: 'shows_live_idx', columns: ['status'], where: "status = 'live'");
+
+        expect(fn () => new MySqlGenerator()->generateAddIndex('shows', $index))
+            ->toThrow(MigrationException::class);
+    });
+
+    it('throws when creating a table with a partial index on mysql', function (): void {
+        $table = new Table(
+            name: 'shows',
+            columns: [new Column(name: 'id', type: 'integer', primaryKey: true, autoIncrement: true)],
+            indexes: [new Index(name: 'shows_live_idx', columns: ['id'], where: 'id > 0')],
+        );
+
+        expect(fn () => new MySqlGenerator()->generateCreateTable($table))
+            ->toThrow(MigrationException::class);
+    });
+
+    it('names the index and suggests an alternative in the exception', function (): void {
+        $index = new Index(name: 'shows_live_idx', columns: ['status'], where: "status = 'live'");
+
+        try {
+            new MySqlGenerator()->generateAddIndex('shows', $index);
+            $this->fail('Expected MigrationException');
+        } catch (MigrationException $e) {
+            expect($e->getMessage())->toContain('shows_live_idx')
+                ->and($e->getMessage())->toContain('MySQL')
+                ->and($e->getSuggestion())->toContain('unmanagedIndexes');
+        }
     });
 
     it('generates CREATE INDEX statements', function (): void {

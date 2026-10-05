@@ -7,6 +7,7 @@ namespace Marko\Database\MySql\Sql;
 use Marko\Database\Diff\SchemaDiff;
 use Marko\Database\Diff\SqlGeneratorInterface;
 use Marko\Database\Diff\TableDiff;
+use Marko\Database\Exceptions\MigrationException;
 use Marko\Database\Schema\Column;
 use Marko\Database\Schema\ForeignKey;
 use Marko\Database\Schema\Index;
@@ -189,6 +190,8 @@ class MySqlGenerator implements SqlGeneratorInterface
         string $table,
         Index $index,
     ): string {
+        $this->assertNotPartial($index);
+
         $indexType = match ($index->type) {
             IndexType::Unique => 'UNIQUE INDEX',
             IndexType::Fulltext => 'FULLTEXT INDEX',
@@ -367,11 +370,26 @@ class MySqlGenerator implements SqlGeneratorInterface
     }
 
     /**
+     * MySQL has no partial indexes; refuse loudly rather than silently creating a full index.
+     *
+     * @throws MigrationException
+     */
+    private function assertNotPartial(
+        Index $index,
+    ): void {
+        if ($index->where !== null) {
+            throw MigrationException::partialIndexNotSupported($index->name, 'MySQL');
+        }
+    }
+
+    /**
      * Build index definition for inline use in CREATE TABLE.
      */
     private function buildIndexDefinition(
         Index $index,
     ): string {
+        $this->assertNotPartial($index);
+
         $indexType = match ($index->type) {
             IndexType::Unique => 'UNIQUE INDEX',
             IndexType::Fulltext => 'FULLTEXT INDEX',
