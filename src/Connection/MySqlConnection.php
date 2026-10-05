@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\Database\MySql\Connection;
 
 use JsonException;
+use Marko\Core\Contracts\ResettableInterface;
 use Marko\Database\Config\DatabaseConfig;
 use Marko\Database\Connection\ConnectionInterface;
 use Marko\Database\Connection\StatementInterface;
@@ -14,9 +15,10 @@ use Marko\Database\MySql\Exceptions\ConnectionException;
 use PDO;
 use PDOException;
 use PDOStatement;
+use Override;
 use Throwable;
 
-class MySqlConnection implements ConnectionInterface, TransactionInterface
+class MySqlConnection implements ConnectionInterface, TransactionInterface, ResettableInterface
 {
     private ?PDO $pdo = null;
 
@@ -273,6 +275,20 @@ class MySqlConnection implements ConnectionInterface, TransactionInterface
             $this->rollback();
 
             throw $e;
+        }
+    }
+
+    /**
+     * Rolls back a transaction abandoned by a request that threw before
+     * commit()/rollback(), so a long-running worker never carries it into
+     * the next request. Never opens a connection: an unconnected instance
+     * has nothing to roll back.
+     */
+    #[Override]
+    public function reset(): void
+    {
+        if ($this->pdo !== null && $this->pdo->inTransaction()) {
+            $this->pdo->rollBack();
         }
     }
 }
