@@ -93,6 +93,12 @@ describe('MySqlServer', function (): void {
             {
                 return false;
             }
+
+            public function quoteIdentifier(
+                string $identifier,
+            ): string {
+                return $this->inner->quoteIdentifier($identifier);
+            }
         };
 
         expect(new MySqlServer($decorator)->isMariaDb())->toBeTrue();
