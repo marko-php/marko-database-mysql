@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Marko\Database\MySql\Tests\Connection;
 
 use Marko\Database\Connection\ConnectionInterface;
+use Marko\Database\Connection\TransactionBackoff;
 use Marko\Database\MySql\Connection\MySqlConnection;
 use Marko\Database\MySql\Connection\MySqlConnectionFactory;
+use Marko\Testing\Fake\FakeSleeper;
+use ReflectionProperty;
 
 describe('MySqlConnectionFactory', function (): void {
     it('creates a MySqlConnection from a DatabaseConfig', function (): void {
@@ -28,5 +31,14 @@ describe('MySqlConnectionFactory', function (): void {
         // The default charset is utf8mb4 — verified by the DSN containing charset=utf8mb4
         expect($connection)->toBeInstanceOf(MySqlConnection::class)
             ->and($connection->getDsn())->toContain('charset=utf8mb4');
+    });
+
+    it('passes the TransactionBackoff to connections made by MySqlConnectionFactory', function (): void {
+        $backoff = new TransactionBackoff(new FakeSleeper());
+        $factory = new MySqlConnectionFactory(transactionBackoff: $backoff);
+
+        $connection = $factory->make(createTestDatabaseConfig());
+
+        expect(new ReflectionProperty($connection, 'transactionBackoff')->getValue($connection))->toBe($backoff);
     });
 });

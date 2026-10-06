@@ -9,6 +9,7 @@ use Marko\Database\Exceptions\ForeignKeyConstraintViolationException;
 use Marko\Database\Exceptions\LockTimeoutException;
 use Marko\Database\Exceptions\NotNullConstraintViolationException;
 use Marko\Database\Exceptions\QueryException;
+use Marko\Database\Exceptions\SerializationFailureException;
 use Marko\Database\Exceptions\TransactionConflictException;
 use Marko\Database\Exceptions\UniqueConstraintViolationException;
 use Marko\Database\MySql\Connection\MySqlExceptionTranslator;
@@ -251,6 +252,21 @@ describe('MySqlExceptionTranslator', function (): void {
         );
 
         expect($exception)->toBeInstanceOf(LockTimeoutException::class);
+    });
+
+    it('translates error 1020 into a SerializationFailureException', function (): void {
+        $pdoException = mysqlDriverError(
+            'HY000',
+            1020,
+            "Record has changed since last read in table 'accounts'",
+        );
+
+        $exception = new MySqlExceptionTranslator()->translate($pdoException, 'UPDATE accounts SET n = ?', [1]);
+
+        expect($exception)->toBeInstanceOf(SerializationFailureException::class)
+            ->and($exception)->toBeInstanceOf(TransactionConflictException::class)
+            ->and($exception->sqlState())->toBe('HY000')
+            ->and($exception->getPrevious())->toBe($pdoException);
     });
 
     it('reads a deadlock error number from the message when errorInfo is missing', function (): void {

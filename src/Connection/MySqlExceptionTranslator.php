@@ -10,6 +10,7 @@ use Marko\Database\Exceptions\ForeignKeyConstraintViolationException;
 use Marko\Database\Exceptions\LockTimeoutException;
 use Marko\Database\Exceptions\NotNullConstraintViolationException;
 use Marko\Database\Exceptions\QueryException;
+use Marko\Database\Exceptions\SerializationFailureException;
 use Marko\Database\Exceptions\UniqueConstraintViolationException;
 use PDOException;
 
@@ -25,6 +26,9 @@ use PDOException;
  * - 3819 (MySQL), 4025 (MariaDB) check failed  → CheckConstraintViolationException
  * - 1213 deadlock found (SQLSTATE 40001, also
  *   how InnoDB reports serialization conflicts) → DeadlockException
+ * - 1020 record has changed since last read
+ *   (ER_CHECKREAD: MariaDB raises it under
+ *   innodb_snapshot_isolation=ON)              → SerializationFailureException
  * - 1205 lock wait timeout exceeded,
  *   3572 lock not acquired with NOWAIT         → LockTimeoutException
  * - anything else                              → QueryException
@@ -78,6 +82,7 @@ class MySqlExceptionTranslator
                 table: $this->match('/failed for `[^`]+`\.`([^`]+)`/', $serverMessage) ?? $this->tableFromSql($sql),
             ),
             1213 => DeadlockException::fromDriverError($exception, $sql, $bindings),
+            1020 => SerializationFailureException::fromDriverError($exception, $sql, $bindings),
             1205, 3572 => LockTimeoutException::fromDriverError($exception, $sql, $bindings),
             default => QueryException::fromDriverError($exception, $sql, $bindings),
         };

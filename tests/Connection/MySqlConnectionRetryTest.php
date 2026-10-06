@@ -4,19 +4,27 @@ declare(strict_types=1);
 
 namespace Marko\Database\MySql\Tests\Connection;
 
+use Closure;
 use Marko\Database\Config\DatabaseConfig;
+use Marko\Database\Connection\TransactionBackoff;
 use Marko\Database\Exceptions\DeadlockException;
 use Marko\Database\Exceptions\QueryException;
+use Marko\Database\Exceptions\SerializationFailureException;
 use Marko\Database\Exceptions\TransactionConflictException;
 use Marko\Database\Exceptions\TransactionException;
 use Marko\Database\MySql\Connection\MySqlConnection;
+use Marko\Database\MySql\Connection\MySqlExceptionTranslator;
 use Marko\Database\MySql\Tests\Fixtures\Retry\ScriptedPdo;
+use Marko\Testing\Fake\FakeSleeper;
 use PDO;
 use PDOException;
+use Random\Engine\Mt19937;
+use Random\Randomizer;
 use RuntimeException;
 
 function makeRetryMySqlConnection(
     ScriptedPdo $pdo,
+    ?TransactionBackoff $backoff = null,
 ): MySqlConnection {
     $config = DatabaseConfig::fromArray([
         'driver' => 'mysql',
@@ -27,13 +35,14 @@ function makeRetryMySqlConnection(
         'password' => 'test',
     ]);
 
-    return new class ($config, $pdo) extends MySqlConnection
+    return new class ($config, $pdo, $backoff ?? new TransactionBackoff()) extends MySqlConnection
     {
         public function __construct(
             DatabaseConfig $config,
             private readonly ScriptedPdo $scriptedPdo,
+            TransactionBackoff $backoff,
         ) {
-            parent::__construct($config);
+            parent::__construct($config, transactionBackoff: $backoff);
         }
 
         protected function createPdo(
@@ -402,5 +411,200 @@ describe('MySqlConnection::transaction() retries', function (): void {
             ->and($conflict?->getPrevious())->toBeInstanceOf(PDOException::class)
             ->and(fn () => $connection->commit())->toThrow(QueryException::class, 'server has gone away')
             ->and($connection->transactionLevel())->toBe(0);
+    });
+});
+
+/**
+ * Runs a transaction whose first $conflicts attempts fail with a deadlock.
+ */
+function runMySqlConflictingTransaction(
+    MySqlConnection $connection,
+    int $conflicts,
+    int $attempts,
+    int|Closure|null $backoff = null,
+): int {
+    $calls = 0;
+
+    return $connection->transaction(function () use (&$calls, $conflicts): int {
+        if (++$calls <= $conflicts) {
+            throw mysqlDeadlock();
+        }
+
+        return $calls;
+    }, attempts: $attempts, backoff: $backoff);
+}
+
+describe('MySqlConnection::transaction() backoff', function (): void {
+    it('waits the default jittered exponential delay between attempts', function (): void {
+        $sleeper = new FakeSleeper();
+        $connection = makeRetryMySqlConnection(
+            new ScriptedPdo(),
+            new TransactionBackoff($sleeper, new Randomizer(new Mt19937(11))),
+        );
+        $reference = new Randomizer(new Mt19937(11));
+
+        $result = runMySqlConflictingTransaction($connection, conflicts: 3, attempts: 4);
+
+        expect($result)->toBe(4)
+            ->and($sleeper->sleeps)->toBe(
+                [$reference->getInt(0, 10), $reference->getInt(0, 20), $reference->getInt(0, 40)],
+            );
+    });
+
+    it('retries immediately when backoff is zero', function (): void {
+        $sleeper = new FakeSleeper();
+        $connection = makeRetryMySqlConnection(new ScriptedPdo(), new TransactionBackoff($sleeper));
+
+        $result = runMySqlConflictingTransaction($connection, conflicts: 2, attempts: 3, backoff: 0);
+
+        expect($result)->toBe(3)
+            ->and($sleeper->sleeps)->toBe([0, 0]);
+    });
+
+    it('waits a fixed delay when backoff is an int', function (): void {
+        $sleeper = new FakeSleeper();
+        $connection = makeRetryMySqlConnection(new ScriptedPdo(), new TransactionBackoff($sleeper));
+
+        runMySqlConflictingTransaction($connection, conflicts: 2, attempts: 3, backoff: 75);
+
+        expect($sleeper->sleeps)->toBe([75, 75]);
+    });
+
+    it('waits the delay a closure returns', function (): void {
+        $sleeper = new FakeSleeper();
+        $connection = makeRetryMySqlConnection(new ScriptedPdo(), new TransactionBackoff($sleeper));
+        $seen = [];
+
+        runMySqlConflictingTransaction(
+            $connection,
+            conflicts: 2,
+            attempts: 3,
+            backoff: function (int $attempt, TransactionConflictException $conflict) use (&$seen): int {
+                $seen[] = $conflict::class;
+
+                return $attempt * 30;
+            },
+        );
+
+        expect($sleeper->sleeps)->toBe([30, 60])
+            ->and($seen)->toBe([DeadlockException::class, DeadlockException::class]);
+    });
+
+    it('waits before retrying a conflict raised by COMMIT', function (): void {
+        $pdo = new ScriptedPdo();
+        $pdo->commitFailures[] = mysqlCommitFailure('40001', 1213, 'Deadlock found when trying to get lock');
+        $sleeper = new FakeSleeper();
+        $connection = makeRetryMySqlConnection($pdo, new TransactionBackoff($sleeper));
+
+        $connection->transaction(fn (): bool => true, attempts: 2, backoff: 15);
+
+        expect($sleeper->sleeps)->toBe([15])
+            ->and($pdo->statements)->toBe(['BEGIN', 'COMMIT', 'ROLLBACK', 'BEGIN', 'COMMIT']);
+    });
+
+    it('never sleeps when attempts is one', function (): void {
+        $sleeper = new FakeSleeper();
+        $connection = makeRetryMySqlConnection(new ScriptedPdo(), new TransactionBackoff($sleeper));
+
+        expect(fn () => runMySqlConflictingTransaction($connection, conflicts: 1, attempts: 1, backoff: 50))
+            ->toThrow(DeadlockException::class)
+            ->and($sleeper->sleeps)->toBe([]);
+    });
+
+    it('never sleeps in a nested transaction', function (): void {
+        $sleeper = new FakeSleeper();
+        $connection = makeRetryMySqlConnection(new ScriptedPdo(), new TransactionBackoff($sleeper));
+        $innerSleeps = null;
+
+        $connection->transaction(function () use ($connection, $sleeper, &$innerSleeps): void {
+            try {
+                runMySqlConflictingTransaction($connection, conflicts: 1, attempts: 5, backoff: 40);
+            } catch (DeadlockException) {
+                $innerSleeps = $sleeper->sleeps;
+            }
+        }, attempts: 3, backoff: 40);
+
+        expect($innerSleeps)->toBe([])
+            ->and($sleeper->sleeps)->toBe([]);
+    });
+
+    it('never sleeps after the final failed attempt', function (): void {
+        $sleeper = new FakeSleeper();
+        $connection = makeRetryMySqlConnection(new ScriptedPdo(), new TransactionBackoff($sleeper));
+
+        expect(fn () => runMySqlConflictingTransaction($connection, conflicts: 3, attempts: 3, backoff: 20))
+            ->toThrow(DeadlockException::class)
+            ->and($sleeper->sleeps)->toBe([20, 20]);
+    });
+
+    it('rejects a negative backoff before beginning the transaction', function (): void {
+        $pdo = new ScriptedPdo();
+        $connection = makeRetryMySqlConnection($pdo, new TransactionBackoff(new FakeSleeper()));
+        $calls = 0;
+
+        $run = function () use ($connection, &$calls): void {
+            $connection->transaction(function () use (&$calls): void {
+                $calls++;
+            }, attempts: 3, backoff: -10);
+        };
+
+        expect($run)->toThrow(TransactionException::class, 'A transaction backoff cannot be negative')
+            ->and($calls)->toBe(0)
+            ->and($pdo->statements)->toBe([])
+            ->and($connection->transactionLevel())->toBe(0);
+    });
+
+    it('retries a transaction that fails with error 1020', function (): void {
+        $sleeper = new FakeSleeper();
+        $connection = makeRetryMySqlConnection(new ScriptedPdo(), new TransactionBackoff($sleeper));
+        $translator = new MySqlExceptionTranslator();
+        $calls = 0;
+
+        $result = $connection->transaction(function () use (&$calls, $translator): string {
+            if (++$calls === 1) {
+                throw $translator->translate(
+                    mysqlCommitFailure('HY000', 1020, "Record has changed since last read in table 'items'"),
+                    'UPDATE items SET name = ?',
+                    ['renamed'],
+                );
+            }
+
+            return 'done';
+        }, attempts: 2, backoff: 5);
+
+        expect($result)->toBe('done')
+            ->and($calls)->toBe(2)
+            ->and($sleeper->sleeps)->toBe([5]);
+    });
+
+    it('retries a transaction whose COMMIT fails with error 1020', function (): void {
+        $pdo = new ScriptedPdo();
+        $pdo->commitFailures[] = mysqlCommitFailure(
+            'HY000',
+            1020,
+            "Record has changed since last read in table 'items'",
+        );
+        $connection = makeRetryMySqlConnection($pdo, new TransactionBackoff(new FakeSleeper()));
+        $calls = 0;
+
+        $result = $connection->transaction(function () use (&$calls): int {
+            return ++$calls;
+        }, attempts: 2);
+
+        expect($result)->toBe(2)
+            ->and($pdo->statements)->toBe(['BEGIN', 'COMMIT', 'ROLLBACK', 'BEGIN', 'COMMIT']);
+    });
+
+    it('surfaces error 1020 as a SerializationFailureException once attempts run out', function (): void {
+        $pdo = new ScriptedPdo();
+        $pdo->commitFailures[] = mysqlCommitFailure(
+            'HY000',
+            1020,
+            "Record has changed since last read in table 'items'",
+        );
+        $connection = makeRetryMySqlConnection($pdo, new TransactionBackoff(new FakeSleeper()));
+
+        expect(fn () => $connection->transaction(fn (): bool => true))
+            ->toThrow(SerializationFailureException::class);
     });
 });
