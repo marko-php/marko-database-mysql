@@ -19,6 +19,7 @@ function createTestDatabaseConfig(
     bool $sslVerifyServerCert = false,
     ?string $sslCert = null,
     ?string $sslKey = null,
+    ?string $timezone = null,
 ): DatabaseConfig {
     $tempDir = sys_get_temp_dir() . '/marko_mysql_test_' . bin2hex(random_bytes(8));
     mkdir($tempDir . '/config', recursive: true);
@@ -46,6 +47,10 @@ function createTestDatabaseConfig(
 
     if ($sslKey !== null) {
         $configArray['ssl_key'] = $sslKey;
+    }
+
+    if ($timezone !== null) {
+        $configArray['timezone'] = $timezone;
     }
 
     file_put_contents(

@@ -55,7 +55,10 @@ describe('MySqlQueryBuilder', function (): void {
                 string $password,
                 array $options,
             ): PDO {
-                $this->testPdo = new PDO('sqlite::memory:', options: $options);
+                $this->testPdo = new PDO(
+                    'sqlite::memory:',
+                    options: array_diff_key($options, [PDO\Mysql::ATTR_INIT_COMMAND => true]),
+                );
                 // Create test tables using SQLite syntax
                 $this->testPdo->exec(
                     'CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT, status TEXT)',

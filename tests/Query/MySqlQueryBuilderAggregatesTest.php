@@ -52,7 +52,10 @@ function createAggregatesSqliteConnection(): MySqlConnection
             string $password,
             array $options,
         ): PDO {
-            $this->testPdo = new PDO('sqlite::memory:', options: $options);
+            $this->testPdo = new PDO(
+                'sqlite::memory:',
+                options: array_diff_key($options, [PDO\Mysql::ATTR_INIT_COMMAND => true]),
+            );
             $this->testPdo->exec(
                 'CREATE TABLE scores (id INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT, points INTEGER, rating REAL)',
             );

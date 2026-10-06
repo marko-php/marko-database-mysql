@@ -53,7 +53,10 @@ function sqliteBackedMySqlConnection(
             string $password,
             array $options,
         ): PDO {
-            $pdo = new class ('sqlite::memory:', options: $options) extends PDO
+            $pdo = new class ('sqlite::memory:', options: array_diff_key(
+                $options,
+                [PDO\Mysql::ATTR_INIT_COMMAND => true],
+            )) extends PDO
             {
                 public function exec(
                     string $statement,
@@ -133,7 +136,10 @@ describe('MySqlConnection exception translation', function (): void {
                 string $password,
                 array $options,
             ): PDO {
-                return new class ('sqlite::memory:', options: $options) extends PDO
+                return new class ('sqlite::memory:', options: array_diff_key(
+                    $options,
+                    [PDO\Mysql::ATTR_INIT_COMMAND => true],
+                )) extends PDO
                 {
                     public function exec(
                         string $statement,

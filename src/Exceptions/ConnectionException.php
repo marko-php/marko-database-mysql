@@ -24,6 +24,20 @@ class ConnectionException extends MarkoException
         );
     }
 
+    public static function unknownTimezone(
+        string $timezone,
+        PDOException $previous,
+    ): self {
+        return new self(
+            message: "MySQL does not know the time zone '$timezone' that database.timezone pins the session to",
+            context: "While setting the session time zone on connect: {$previous->getMessage()}",
+            suggestion: 'Load the time zone tables into the server (mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root mysql, '
+                . "or mariadb-tzinfo-to-sql on MariaDB), or set 'timezone' in config/database.php to 'UTC' or a fixed offset "
+                . "such as '+00:00', which need no time zone tables.",
+            previous: $previous,
+        );
+    }
+
     public static function invalidArrayBinding(
         int|string $parameter,
         JsonException $previous,

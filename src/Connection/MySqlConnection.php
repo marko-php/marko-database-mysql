@@ -26,6 +26,9 @@ use Throwable;
 
 class MySqlConnection implements ConnectionInterface, TransactionInterface, PendingAfterCommitInterface, ResettableInterface
 {
+    /** ER_UNKNOWN_TIME_ZONE: the server has no time zone tables, or none for this zone. */
+    private const int ERROR_UNKNOWN_TIME_ZONE = 1298;
+
     private ?PDO $pdo = null;
 
     private TransactionState $transactionState;
@@ -61,6 +64,7 @@ class MySqlConnection implements ConnectionInterface, TransactionInterface, Pend
 
         $options = [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO\Mysql::ATTR_INIT_COMMAND => $this->getSetTimezoneQuery(),
         ];
 
         if ($this->config->sslRootCert !== null) {
@@ -84,6 +88,10 @@ class MySqlConnection implements ConnectionInterface, TransactionInterface, Pend
                 $options,
             );
         } catch (PDOException $e) {
+            if (($e->errorInfo[1] ?? $e->getCode()) === self::ERROR_UNKNOWN_TIME_ZONE) {
+                throw ConnectionException::unknownTimezone($this->getSessionTimezone(), $e);
+            }
+
             throw ConnectionException::connectionFailed(
                 $this->config->host,
                 $this->config->port,
@@ -91,6 +99,24 @@ class MySqlConnection implements ConnectionInterface, TransactionInterface, Pend
                 $e,
             );
         }
+    }
+
+    /**
+     * The session time zone: database.timezone as a fixed offset (`+00:00` for UTC) when it has one, which
+     * needs no time zone tables, or the zone name, which does.
+     */
+    private function getSessionTimezone(): string
+    {
+        return $this->config->fixedTimezoneOffset() ?? $this->config->timezone->getName();
+    }
+
+    /**
+     * Run by the server on every new connection (PDO\Mysql::ATTR_INIT_COMMAND), so a reconnect is pinned too.
+     * The zone was validated by DateTimeZone, so it holds no quote.
+     */
+    private function getSetTimezoneQuery(): string
+    {
+        return "SET time_zone = '{$this->getSessionTimezone()}'";
     }
 
     /**
