@@ -158,7 +158,7 @@ class MySqlQueryBuilder implements QueryBuilderInterface
         string $expression,
         array $bindings = [],
     ): static {
-        IdentifierValidator::assertNoDangerousPatterns($expression);
+        IdentifierValidator::assertNoDangerousPatterns($expression, hashStartsComment: true);
         $this->rawSelects[] = $expression;
         array_push($this->rawSelectBindings, ...$bindings);
 
@@ -362,7 +362,7 @@ class MySqlQueryBuilder implements QueryBuilderInterface
         string $expression,
         array $bindings = [],
     ): static {
-        IdentifierValidator::assertNoDangerousPatterns($expression);
+        IdentifierValidator::assertNoDangerousPatterns($expression, hashStartsComment: true);
         $this->rawWheres[] = ['expression' => $expression, 'bindings' => $bindings];
 
         return $this;
@@ -395,7 +395,7 @@ class MySqlQueryBuilder implements QueryBuilderInterface
         string $expression,
         array $bindings = [],
     ): static {
-        IdentifierValidator::assertNoDangerousPatterns($expression);
+        IdentifierValidator::assertNoDangerousPatterns($expression, hashStartsComment: true);
 
         $this->havingClause = [
             'expression' => $expression,
@@ -512,7 +512,7 @@ class MySqlQueryBuilder implements QueryBuilderInterface
         string $expression,
         string $direction = 'ASC',
     ): static {
-        IdentifierValidator::assertNoDangerousPatterns($expression);
+        IdentifierValidator::assertNoDangerousPatterns($expression, hashStartsComment: true);
 
         $direction = strtoupper($direction);
         if (!in_array($direction, ['ASC', 'DESC'], true)) {

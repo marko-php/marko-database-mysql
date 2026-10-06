@@ -71,6 +71,10 @@ class MySqlConnection implements ConnectionInterface, TransactionInterface, Pend
 
         $options = [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            // Real server-side prepares: values travel apart from the SQL text, and errors never echo them.
+            PDO::ATTR_EMULATE_PREPARES => false,
+            // One statement per call, so SQL concatenated into a query cannot stack a second one.
+            PDO\Mysql::ATTR_MULTI_STATEMENTS => false,
             PDO\Mysql::ATTR_INIT_COMMAND => $this->getSetTimezoneQuery(),
         ];
 

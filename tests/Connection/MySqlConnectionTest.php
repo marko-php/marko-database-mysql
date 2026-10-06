@@ -126,6 +126,20 @@ describe('MySqlConnection', function (): void {
         expect($capturedOptions[PDO::ATTR_ERRMODE])->toBe(PDO::ERRMODE_EXCEPTION);
     });
 
+    it('turns off emulated prepares so the server binds every value', function (): void {
+        $options = connectAndCapturePdoOptions(createTestDatabaseConfig());
+
+        expect($options)->toHaveKey(PDO::ATTR_EMULATE_PREPARES)
+            ->and($options[PDO::ATTR_EMULATE_PREPARES])->toBeFalse();
+    });
+
+    it('turns off multi-statements so a query string cannot stack a second statement', function (): void {
+        $options = connectAndCapturePdoOptions(createTestDatabaseConfig());
+
+        expect($options)->toHaveKey(PDO\Mysql::ATTR_MULTI_STATEMENTS)
+            ->and($options[PDO\Mysql::ATTR_MULTI_STATEMENTS])->toBeFalse();
+    });
+
     it('sets charset from config', function (): void {
         $capturedDsn = '';
         $config = createTestDatabaseConfig();

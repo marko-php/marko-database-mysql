@@ -1372,4 +1372,19 @@ describe('MySqlQueryBuilder', function (): void {
                 ->toThrow(InvalidColumnException::class);
         });
     });
+
+    describe('# comment marker denylist', function (): void {
+        it('rejects a # comment marker in every raw fragment', function (): void {
+            $injected = "name = '' OR 1=1 #'";
+
+            expect(fn () => $this->builder->whereRaw($injected))
+                ->toThrow(InvalidColumnException::class)
+                ->and(fn () => $this->builder->selectRaw('1 # comment'))
+                ->toThrow(InvalidColumnException::class)
+                ->and(fn () => $this->builder->having('COUNT(*) > 1 # comment'))
+                ->toThrow(InvalidColumnException::class)
+                ->and(fn () => $this->builder->orderByRaw('name # comment'))
+                ->toThrow(InvalidColumnException::class);
+        });
+    });
 });
