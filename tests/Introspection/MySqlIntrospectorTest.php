@@ -113,6 +113,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => null,
                     'EXTRA' => 'auto_increment',
+                    'COLUMN_TYPE' => 'int',
+                    'COLLATION_NAME' => null,
                 ],
                 [
                     'COLUMN_NAME' => 'name',
@@ -121,6 +123,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => null,
                     'EXTRA' => '',
+                    'COLUMN_TYPE' => 'varchar(255)',
+                    'COLLATION_NAME' => 'utf8mb4_0900_ai_ci',
                 ],
             ],
         ]);
@@ -145,6 +149,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => null,
                     'EXTRA' => '',
+                    'COLUMN_TYPE' => 'bigint',
+                    'COLLATION_NAME' => null,
                 ],
                 [
                     'COLUMN_NAME' => 'title',
@@ -153,6 +159,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => null,
                     'EXTRA' => '',
+                    'COLUMN_TYPE' => 'varchar(100)',
+                    'COLLATION_NAME' => 'utf8mb4_0900_ai_ci',
                 ],
                 [
                     'COLUMN_NAME' => 'content',
@@ -161,6 +169,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'YES',
                     'COLUMN_DEFAULT' => null,
                     'EXTRA' => '',
+                    'COLUMN_TYPE' => 'text',
+                    'COLLATION_NAME' => 'utf8mb4_0900_ai_ci',
                 ],
             ],
         ]);
@@ -185,6 +195,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => null,
                     'EXTRA' => '',
+                    'COLUMN_TYPE' => 'int',
+                    'COLLATION_NAME' => null,
                 ],
                 [
                     'COLUMN_NAME' => 'bio',
@@ -193,6 +205,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'YES',
                     'COLUMN_DEFAULT' => null,
                     'EXTRA' => '',
+                    'COLUMN_TYPE' => 'text',
+                    'COLLATION_NAME' => 'utf8mb4_0900_ai_ci',
                 ],
             ],
         ]);
@@ -215,6 +229,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => 'active',
                     'EXTRA' => '',
+                    'COLUMN_TYPE' => 'varchar(20)',
+                    'COLLATION_NAME' => 'utf8mb4_0900_ai_ci',
                 ],
                 [
                     'COLUMN_NAME' => 'priority',
@@ -223,6 +239,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => '0',
                     'EXTRA' => '',
+                    'COLUMN_TYPE' => 'int',
+                    'COLLATION_NAME' => null,
                 ],
                 [
                     'COLUMN_NAME' => 'created_at',
@@ -231,6 +249,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => 'CURRENT_TIMESTAMP',
                     'EXTRA' => 'DEFAULT_GENERATED',
+                    'COLUMN_TYPE' => 'timestamp',
+                    'COLLATION_NAME' => null,
                 ],
             ],
         ]);
@@ -244,6 +264,119 @@ describe('MySqlIntrospector', function (): void {
             ->and($columns[2]->default)->toBe('CURRENT_TIMESTAMP');
     });
 
+    it('reads the native column definition the restating of a column needs', function (): void {
+        $connection = createMockConnection([
+            'information_schema.columns' => [
+                [
+                    'COLUMN_NAME' => 'price',
+                    'DATA_TYPE' => 'decimal',
+                    'CHARACTER_MAXIMUM_LENGTH' => null,
+                    'IS_NULLABLE' => 'NO',
+                    'COLUMN_DEFAULT' => null,
+                    'EXTRA' => '',
+                    'COLUMN_TYPE' => 'decimal(12,4) unsigned',
+                    'COLLATION_NAME' => null,
+                ],
+                [
+                    'COLUMN_NAME' => 'code',
+                    'DATA_TYPE' => 'varchar',
+                    'CHARACTER_MAXIMUM_LENGTH' => '32',
+                    'IS_NULLABLE' => 'NO',
+                    'COLUMN_DEFAULT' => null,
+                    'EXTRA' => '',
+                    'COLUMN_TYPE' => 'varchar(32)',
+                    'COLLATION_NAME' => 'utf8mb4_bin',
+                ],
+                [
+                    'COLUMN_NAME' => 'updated_at',
+                    'DATA_TYPE' => 'timestamp',
+                    'CHARACTER_MAXIMUM_LENGTH' => null,
+                    'IS_NULLABLE' => 'NO',
+                    'COLUMN_DEFAULT' => 'CURRENT_TIMESTAMP(3)',
+                    'EXTRA' => 'DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)',
+                    'COLUMN_TYPE' => 'timestamp(3)',
+                    'COLLATION_NAME' => null,
+                ],
+                [
+                    'COLUMN_NAME' => 'touched_at',
+                    'DATA_TYPE' => 'datetime',
+                    'CHARACTER_MAXIMUM_LENGTH' => null,
+                    'IS_NULLABLE' => 'YES',
+                    'COLUMN_DEFAULT' => null,
+                    'EXTRA' => 'on update current_timestamp()',
+                    'COLUMN_TYPE' => 'datetime',
+                    'COLLATION_NAME' => null,
+                ],
+            ],
+        ]);
+
+        $columns = new MySqlIntrospector($connection, 'testdb')->getColumns('products');
+
+        expect($columns[0]->nativeType)->toBe('decimal(12,4) unsigned')
+            ->and($columns[0]->collation)->toBeNull()
+            ->and($columns[0]->onUpdateExpression)->toBeNull()
+            ->and($columns[1]->nativeType)->toBe('varchar(32)')
+            ->and($columns[1]->collation)->toBe('utf8mb4_bin')
+            ->and($columns[2]->nativeType)->toBe('timestamp(3)')
+            ->and($columns[2]->onUpdateExpression)->toBe('CURRENT_TIMESTAMP(3)')
+            ->and($columns[3]->onUpdateExpression)->toBe('current_timestamp()');
+    });
+
+    it('selects the native type and only a collation that differs from the table default', function (): void {
+        $connection = new class () implements ConnectionInterface
+        {
+            public string $columnsSql = '';
+
+            public function connect(): void {}
+
+            public function disconnect(): void {}
+
+            public function isConnected(): bool
+            {
+                return true;
+            }
+
+            public function query(
+                string $sql,
+                array $bindings = [],
+            ): array {
+                if (str_contains($sql, 'information_schema.columns')) {
+                    $this->columnsSql = $sql;
+                }
+
+                return [];
+            }
+
+            public function execute(
+                string $sql,
+                array $bindings = [],
+            ): int {
+                return 0;
+            }
+
+            public function prepare(
+                string $sql,
+            ): StatementInterface {
+                throw new RuntimeException('Not implemented');
+            }
+
+            public function lastInsertId(): int
+            {
+                return 0;
+            }
+
+            public function driverName(): string
+            {
+                return 'mysql';
+            }
+        };
+
+        new MySqlIntrospector($connection, 'testdb')->getColumns('products');
+
+        expect($connection->columnsSql)->toContain('COLUMN_TYPE')
+            ->toContain('CASE WHEN c.COLLATION_NAME = t.TABLE_COLLATION THEN NULL ELSE c.COLLATION_NAME END');
+    });
+
     it('detects auto_increment columns', function (): void {
         $connection = createMockConnection([
             'information_schema.columns' => [
@@ -254,6 +387,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => null,
                     'EXTRA' => 'auto_increment',
+                    'COLUMN_TYPE' => 'int',
+                    'COLLATION_NAME' => null,
                 ],
                 [
                     'COLUMN_NAME' => 'name',
@@ -262,6 +397,8 @@ describe('MySqlIntrospector', function (): void {
                     'IS_NULLABLE' => 'NO',
                     'COLUMN_DEFAULT' => null,
                     'EXTRA' => '',
+                    'COLUMN_TYPE' => 'varchar(255)',
+                    'COLLATION_NAME' => 'utf8mb4_0900_ai_ci',
                 ],
             ],
         ]);
@@ -505,7 +642,8 @@ describe('MySqlIntrospector', function (): void {
                 string $sql,
                 array $bindings = [],
             ): array {
-                if (str_contains($sql, 'information_schema.tables')) {
+                // Match the tables query by its FROM clause: the columns query joins information_schema.tables
+                if (str_contains($sql, 'FROM information_schema.tables')) {
                     $this->callOrder[] = 'tables';
 
                     return [['TABLE_NAME' => 'users']];
@@ -522,6 +660,8 @@ describe('MySqlIntrospector', function (): void {
                             'IS_NULLABLE' => 'NO',
                             'COLUMN_DEFAULT' => null,
                             'EXTRA' => 'auto_increment',
+                            'COLUMN_TYPE' => 'int',
+                            'COLLATION_NAME' => null,
                         ],
                     ];
                 }

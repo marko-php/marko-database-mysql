@@ -64,6 +64,54 @@ class MySqlGenerator implements SqlGeneratorInterface
         'NULL',
     ];
 
+    /**
+     * Native base types whose length is part of the type, so a different length is a different type.
+     *
+     * @var list<string>
+     */
+    private const array LENGTH_TYPES = ['char', 'varchar', 'binary', 'varbinary'];
+
+    /**
+     * Native base types that carry a character set and collation.
+     *
+     * @var list<string>
+     */
+    private const array COLLATED_TYPES = [
+        'char',
+        'varchar',
+        'tinytext',
+        'text',
+        'mediumtext',
+        'longtext',
+        'enum',
+        'set',
+    ];
+
+    /**
+     * Native base types that accept ON UPDATE CURRENT_TIMESTAMP.
+     *
+     * @var list<string>
+     */
+    private const array ON_UPDATE_TYPES = ['timestamp', 'datetime'];
+
+    /**
+     * Native base types that cannot hold a literal DEFAULT.
+     *
+     * @var list<string>
+     */
+    private const array NO_LITERAL_DEFAULT_TYPES = [
+        'tinytext',
+        'text',
+        'mediumtext',
+        'longtext',
+        'tinyblob',
+        'blob',
+        'mediumblob',
+        'longblob',
+        'json',
+        'geometry',
+    ];
+
     public function generateUp(
         SchemaDiff $diff,
     ): array {
@@ -174,6 +222,10 @@ class MySqlGenerator implements SqlGeneratorInterface
         );
     }
 
+    /**
+     * MODIFY COLUMN restates the full definition of $column. Migrations generated from a diff pass the
+     * resolved target (see generateColumnModifications()), so nothing the diff accepted is lost.
+     */
     public function generateModifyColumn(
         string $table,
         Column $column,
@@ -182,7 +234,7 @@ class MySqlGenerator implements SqlGeneratorInterface
         return sprintf(
             'ALTER TABLE %s MODIFY COLUMN %s',
             $this->quote($table),
-            $this->buildColumnDefinition($column),
+            $this->buildColumnDefinition($column, inlineUnique: false),
         );
     }
 
@@ -272,12 +324,17 @@ class MySqlGenerator implements SqlGeneratorInterface
      */
     private function buildColumnDefinition(
         Column $column,
+        bool $inlineUnique = true,
     ): string {
         $parts = [$this->quote($column->name)];
 
-        // Get MySQL type
-        $mysqlType = $this->mapType($column->type, $column->length);
+        // The native type the database reported wins: it holds what Column cannot (precision, UNSIGNED, ...)
+        $mysqlType = $column->nativeType ?? $this->mapType($column->type, $column->length);
         $parts[] = $mysqlType;
+
+        if ($column->collation !== null && $this->baseTypeIn($mysqlType, self::COLLATED_TYPES)) {
+            $parts[] = 'COLLATE ' . $column->collation;
+        }
 
         // NULL/NOT NULL - PRIMARY KEY and AUTO_INCREMENT columns must be NOT NULL
         $forceNotNull = $column->primaryKey || $column->autoIncrement;
@@ -293,12 +350,122 @@ class MySqlGenerator implements SqlGeneratorInterface
             $parts[] = 'DEFAULT ' . $this->formatDefault($column->default);
         }
 
-        // UNIQUE constraint (inline)
-        if ($column->unique && !$column->primaryKey) {
+        if ($column->onUpdateExpression !== null && $this->baseTypeIn($mysqlType, self::ON_UPDATE_TYPES)) {
+            $parts[] = 'ON UPDATE ' . $column->onUpdateExpression;
+        }
+
+        // UNIQUE constraint (inline). Never restated by MODIFY COLUMN, where it would add a second unique
+        // index to a column that has one; the index diff owns uniqueness there.
+        if ($inlineUnique && $column->unique && !$column->primaryKey) {
             $parts[] = 'UNIQUE';
         }
 
         return implode(' ', $parts);
+    }
+
+    /**
+     * The base of a MySQL type, lowercased: `decimal` for `DECIMAL(12,4) UNSIGNED`.
+     */
+    private function baseType(
+        string $type,
+    ): string {
+        preg_match('/^[a-z]+/i', $type, $matches);
+
+        return strtolower($matches[0] ?? $type);
+    }
+
+    /**
+     * @param list<string> $baseTypes
+     */
+    private function baseTypeIn(
+        string $type,
+        array $baseTypes,
+    ): bool {
+        return in_array($this->baseType($type), $baseTypes, true);
+    }
+
+    /**
+     * The column an up migration moves $column to, given $previous (the database's definition).
+     *
+     * Column::resolveAgainst() applies the diff's tolerances (an undeclared length or default keeps the
+     * database's) and carries the native metadata over. This keeps that metadata only where it still fits:
+     * the native type while the entity does not redefine the type, the collation while the type is a
+     * string type, and ON UPDATE while it is a timestamp or datetime.
+     */
+    private function targetColumn(
+        Column $column,
+        Column $previous,
+    ): Column {
+        $resolved = $column->resolveAgainst($previous);
+
+        // A length is only part of the type for the length-bearing types (MySQL reports 65535 for TEXT)
+        $previousIsSized = $previous->nativeType !== null
+            ? $this->baseTypeIn($previous->nativeType, self::LENGTH_TYPES)
+            : $this->baseTypeIn($this->mapType($previous->type, $previous->length), self::LENGTH_TYPES);
+        $length = $column->length ?? ($previousIsSized ? $previous->length : null);
+
+        $nativeType = $this->nativeTypeApplies($resolved, $length) ? $resolved->nativeType : null;
+        $type = $nativeType ?? $this->mapType($resolved->type, $length);
+
+        // A kept default goes when the entity changes the column to a type that cannot hold it (VARCHAR to
+        // TEXT); the down migration restores it with the previous type
+        $keptDefaultFits = $column->default !== null || !$this->baseTypeIn($type, self::NO_LITERAL_DEFAULT_TYPES);
+
+        return new Column(
+            name: $resolved->name,
+            type: $resolved->type,
+            length: $length,
+            nullable: $resolved->nullable,
+            default: $keptDefaultFits ? $resolved->default : null,
+            unique: $resolved->unique,
+            primaryKey: $resolved->primaryKey,
+            autoIncrement: $resolved->autoIncrement,
+            references: $resolved->references,
+            onDelete: $resolved->onDelete,
+            onUpdate: $resolved->onUpdate,
+            nativeType: $nativeType,
+            collation: $this->baseTypeIn($type, self::COLLATED_TYPES) ? $resolved->collation : null,
+            onUpdateExpression: $this->baseTypeIn($type, self::ON_UPDATE_TYPES) ? $resolved->onUpdateExpression : null,
+        );
+    }
+
+    /**
+     * Whether the native type carried over from the database still describes $column: the entity names
+     * the same base type (`decimal` for `decimal(12,4) unsigned`, `enum` for `enum('a','b')`) and, for
+     * char/varchar/binary/varbinary, the same length.
+     */
+    private function nativeTypeApplies(
+        Column $column,
+        ?int $length,
+    ): bool {
+        if ($column->nativeType === null) {
+            return false;
+        }
+
+        $nativeBase = $this->normalizeBaseType($this->baseType($column->nativeType));
+        $sameBase = in_array($nativeBase, [
+            $this->normalizeBaseType($this->baseType($this->mapType($column->type, $length))),
+            $this->normalizeBaseType(strtolower($column->type)),
+        ], true);
+
+        if (!$sameBase) {
+            return false;
+        }
+
+        if (!in_array($nativeBase, self::LENGTH_TYPES, true) || $length === null) {
+            return true;
+        }
+
+        return preg_match('/\((\d+)\)/', $column->nativeType, $matches) === 1 && (int) $matches[1] === $length;
+    }
+
+    /**
+     * `datetime` and `timestamp` are the same type to the diff (Column::equals()), so they are here too.
+     */
+    private function normalizeBaseType(
+        string $baseType,
+    ): string {
+        return $baseType === 'datetime' ? 'timestamp' : $baseType;
     }
 
     /**
@@ -465,14 +632,7 @@ class MySqlGenerator implements SqlGeneratorInterface
         }
 
         // Modify columns
-        // MODIFY COLUMN restates the full new definition, so the previous column is optional here
-        foreach ($tableDiff->columnsToModify as $columnName => $column) {
-            $statements[] = $this->generateModifyColumn(
-                $tableDiff->tableName,
-                $column,
-                $tableDiff->columnsToModifyFrom[$columnName] ?? new Column(name: $columnName, type: 'string'),
-            );
-        }
+        $statements = [...$statements, ...$this->generateColumnModifications($tableDiff, reverse: false)];
 
         // Add indexes
         foreach ($tableDiff->indexesToAdd as $index) {
@@ -518,13 +678,7 @@ class MySqlGenerator implements SqlGeneratorInterface
         }
 
         // Reverse: restore modified columns to their previous definition
-        foreach ($tableDiff->columnsToModify as $columnName => $column) {
-            $statements[] = $this->generateModifyColumn(
-                $tableDiff->tableName,
-                $tableDiff->previousColumn($columnName),
-                $column,
-            );
-        }
+        $statements = [...$statements, ...$this->generateColumnModifications($tableDiff, reverse: true)];
 
         // Reverse: add indexes that were dropped
         foreach ($tableDiff->indexesToDrop as $index) {
@@ -534,6 +688,39 @@ class MySqlGenerator implements SqlGeneratorInterface
         // Reverse: add foreign keys that were dropped
         foreach ($tableDiff->foreignKeysToDrop as $foreignKey) {
             $statements[] = $this->generateAddForeignKey($tableDiff->tableName, $foreignKey);
+        }
+
+        return $statements;
+    }
+
+    /**
+     * MODIFY COLUMN statements that apply (or, in reverse, undo) every modified column of a table diff.
+     *
+     * The up statement moves each column to its target (see targetColumn()); the down statement restates
+     * the database's previous definition, native type, collation and ON UPDATE included. A column whose
+     * target renders the same as its previous definition gets no statement in either direction.
+     *
+     * @return list<string>
+     * @throws MigrationException When the diff holds no previous definition for a modified column
+     */
+    private function generateColumnModifications(
+        TableDiff $tableDiff,
+        bool $reverse,
+    ): array {
+        $statements = [];
+
+        foreach ($tableDiff->columnsToModify as $columnName => $column) {
+            $previous = $tableDiff->previousColumn($columnName);
+            $target = $this->targetColumn($column, $previous);
+
+            if ($this->buildColumnDefinition($target, inlineUnique: false)
+                === $this->buildColumnDefinition($previous, inlineUnique: false)) {
+                continue;
+            }
+
+            $statements[] = $reverse
+                ? $this->generateModifyColumn($tableDiff->tableName, $previous, $target)
+                : $this->generateModifyColumn($tableDiff->tableName, $target, $previous);
         }
 
         return $statements;

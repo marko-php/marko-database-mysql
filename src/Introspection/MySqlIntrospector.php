@@ -76,18 +76,25 @@ readonly class MySqlIntrospector implements IntrospectorInterface
         array $primaryKeyColumns = [],
         array $uniqueColumns = [],
     ): array {
+        // A collation is reported only where it differs from the table's default, so restating a column
+        // pins nothing the table would not give it anyway
         $sql = <<<'SQL'
             SELECT
-                COLUMN_NAME,
-                DATA_TYPE,
-                CHARACTER_MAXIMUM_LENGTH,
-                IS_NULLABLE,
-                COLUMN_DEFAULT,
-                EXTRA
-            FROM information_schema.columns
-            WHERE TABLE_SCHEMA = ?
-            AND TABLE_NAME = ?
-            ORDER BY ORDINAL_POSITION
+                c.COLUMN_NAME,
+                c.DATA_TYPE,
+                c.CHARACTER_MAXIMUM_LENGTH,
+                c.IS_NULLABLE,
+                c.COLUMN_DEFAULT,
+                c.EXTRA,
+                c.COLUMN_TYPE,
+                CASE WHEN c.COLLATION_NAME = t.TABLE_COLLATION THEN NULL ELSE c.COLLATION_NAME END AS COLLATION_NAME
+            FROM information_schema.columns c
+            JOIN information_schema.tables t
+                ON t.TABLE_SCHEMA = c.TABLE_SCHEMA
+                AND t.TABLE_NAME = c.TABLE_NAME
+            WHERE c.TABLE_SCHEMA = ?
+            AND c.TABLE_NAME = ?
+            ORDER BY c.ORDINAL_POSITION
         SQL;
 
         $rows = $this->connection->query($sql, [$this->database, $table]);
@@ -111,10 +118,23 @@ readonly class MySqlIntrospector implements IntrospectorInterface
                 unique: $isUnique,
                 primaryKey: $isPrimaryKey,
                 autoIncrement: str_contains($row['EXTRA'], 'auto_increment'),
+                nativeType: $row['COLUMN_TYPE'],
+                collation: $row['COLLATION_NAME'],
+                onUpdateExpression: $this->onUpdateExpression($row['EXTRA']),
             );
         }
 
         return $columns;
+    }
+
+    /**
+     * The ON UPDATE expression in a column's EXTRA, such as `CURRENT_TIMESTAMP(3)` from
+     * `DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)` (MariaDB reports `on update current_timestamp()`).
+     */
+    private function onUpdateExpression(
+        string $extra,
+    ): ?string {
+        return preg_match('/\bon update (\S+)/i', $extra, $matches) === 1 ? $matches[1] : null;
     }
 
     /**

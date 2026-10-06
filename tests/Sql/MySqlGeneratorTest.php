@@ -680,24 +680,258 @@ describe('MySqlGenerator', function (): void {
             ->and($statements[1])->toContain('ADD CONSTRAINT `posts_author_id_foreign`');
     });
 
-    it(
-        'throws a MigrationException naming the column when a down migration lacks the previous column',
-        function (): void {
+    it('throws a MigrationException naming the column when the diff lacks the previous column', function (): void {
+        $diff = new SchemaDiff(tablesToAlter: [
+            'posts' => new TableDiff(
+                tableName: 'posts',
+                columnsToModify: ['status' => new Column(name: 'status', type: 'string', default: 'live')],
+            ),
+        ]);
+
+        expect(fn () => new MySqlGenerator()->generateDown($diff))->toThrow(
+            MigrationException::class,
+            "Column 'posts.status' is modified, but the diff holds no previous definition for it",
+        )->and(fn () => new MySqlGenerator()->generateUp($diff))->toThrow(
+            MigrationException::class,
+            "Column 'posts.status' is modified, but the diff holds no previous definition for it",
+        );
+    });
+
+    describe('MODIFY COLUMN fidelity', function (): void {
+        it('keeps the existing VARCHAR length when the entity declares none', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'title', type: 'varchar', nullable: true),
+                new Column(name: 'title', type: 'VARCHAR', length: 500, nativeType: 'varchar(500)'),
+            ));
+
+            expect($statements)->toBe(['ALTER TABLE `posts` MODIFY COLUMN `title` varchar(500) NULL']);
+        });
+
+        it('keeps the existing default when the entity declares none', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'status', type: 'varchar', length: 20, nullable: true),
+                new Column(name: 'status', type: 'VARCHAR', length: 20, default: 'draft'),
+            ));
+
+            expect($statements)->toBe(["ALTER TABLE `posts` MODIFY COLUMN `status` VARCHAR(20) NULL DEFAULT 'draft'"]);
+        });
+
+        it('emits no MODIFY COLUMN when the target matches the previous column', function (): void {
+            $diff = mysqlModifyDiff(
+                new Column(name: 'views', type: 'integer'),
+                new Column(name: 'views', type: 'INT', nativeType: 'int unsigned', default: '0'),
+            );
+
+            expect(new MySqlGenerator()->generateUp($diff))->toBeEmpty()
+                ->and(new MySqlGenerator()->generateDown($diff))->toBeEmpty();
+        });
+
+        it('emits no MODIFY COLUMN when only the uniqueness differs', function (): void {
+            $diff = mysqlModifyDiff(
+                new Column(name: 'email', type: 'varchar', length: 100, unique: true),
+                new Column(name: 'email', type: 'VARCHAR', length: 100),
+            );
+
+            expect(new MySqlGenerator()->generateUp($diff))->toBeEmpty();
+        });
+
+        it('omits inline UNIQUE from MODIFY COLUMN', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'email', type: 'varchar', length: 100, nullable: true, unique: true),
+                new Column(name: 'email', type: 'VARCHAR', length: 100, unique: true),
+            ));
+
+            expect($statements)->toBe(['ALTER TABLE `posts` MODIFY COLUMN `email` VARCHAR(100) NULL']);
+        });
+
+        it('keeps DECIMAL precision and UNSIGNED when the entity does not redefine the type', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'price', type: 'decimal', nullable: true),
+                new Column(name: 'price', type: 'DECIMAL', nativeType: 'decimal(12,4) unsigned'),
+            ));
+
+            expect($statements)->toBe(['ALTER TABLE `posts` MODIFY COLUMN `price` decimal(12,4) unsigned NULL']);
+        });
+
+        it('keeps the collation and ON UPDATE when the entity does not redefine the type', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'updated_at', type: 'timestamp', nullable: true),
+                new Column(
+                    name: 'updated_at',
+                    type: 'TIMESTAMP',
+                    default: 'CURRENT_TIMESTAMP',
+                    nativeType: 'timestamp',
+                    onUpdateExpression: 'CURRENT_TIMESTAMP',
+                ),
+            ));
+
+            expect($statements)->toBe([
+                'ALTER TABLE `posts` MODIFY COLUMN `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP '
+                . 'ON UPDATE CURRENT_TIMESTAMP',
+            ]);
+        });
+
+        it('emits the entity type and keeps the collation when a string column changes length', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'code', type: 'varchar', length: 64),
+                new Column(
+                    name: 'code',
+                    type: 'VARCHAR',
+                    length: 32,
+                    nativeType: 'varchar(32)',
+                    collation: 'utf8mb4_bin',
+                ),
+            ));
+
+            expect($statements)->toBe([
+                'ALTER TABLE `posts` MODIFY COLUMN `code` VARCHAR(64) COLLATE utf8mb4_bin NOT NULL',
+            ]);
+        });
+
+        it('drops the collation when a string column becomes non-string', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'code', type: 'integer'),
+                new Column(
+                    name: 'code',
+                    type: 'VARCHAR',
+                    length: 32,
+                    nativeType: 'varchar(32)',
+                    collation: 'utf8mb4_bin',
+                ),
+            ));
+
+            expect($statements)->toBe(['ALTER TABLE `posts` MODIFY COLUMN `code` INT NOT NULL']);
+        });
+
+        it('emits the entity type when the entity changes an unsigned integer to bigint', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'author_id', type: 'bigint'),
+                new Column(name: 'author_id', type: 'INT', nativeType: 'int unsigned'),
+            ));
+
+            expect($statements)->toBe(['ALTER TABLE `posts` MODIFY COLUMN `author_id` BIGINT NOT NULL']);
+        });
+
+        it(
+            'restores DECIMAL precision, UNSIGNED, collation and ON UPDATE in a down migration',
+            function (): void {
+                $diff = new SchemaDiff(tablesToAlter: [
+                    'posts' => new TableDiff(
+                        tableName: 'posts',
+                        columnsToModify: [
+                            'price' => new Column(name: 'price', type: 'bigint'),
+                            'code' => new Column(name: 'code', type: 'text'),
+                            'updated_at' => new Column(name: 'updated_at', type: 'date'),
+                        ],
+                        columnsToModifyFrom: [
+                            'price' => new Column(
+                                name: 'price',
+                                type: 'DECIMAL',
+                                nativeType: 'decimal(12,4) unsigned',
+                            ),
+                            'code' => new Column(
+                                name: 'code',
+                                type: 'VARCHAR',
+                                length: 32,
+                                nativeType: 'varchar(32)',
+                                collation: 'utf8mb4_bin',
+                            ),
+                            'updated_at' => new Column(
+                                name: 'updated_at',
+                                type: 'TIMESTAMP',
+                                nullable: true,
+                                default: 'CURRENT_TIMESTAMP',
+                                nativeType: 'timestamp',
+                                onUpdateExpression: 'CURRENT_TIMESTAMP',
+                            ),
+                        ],
+                    ),
+                ]);
+
+                expect(new MySqlGenerator()->generateDown($diff))->toBe([
+                    'ALTER TABLE `posts` MODIFY COLUMN `price` decimal(12,4) unsigned NOT NULL',
+                    'ALTER TABLE `posts` MODIFY COLUMN `code` varchar(32) COLLATE utf8mb4_bin NOT NULL',
+                    'ALTER TABLE `posts` MODIFY COLUMN `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP '
+                    . 'ON UPDATE CURRENT_TIMESTAMP',
+                ]);
+            },
+        );
+
+        it('restores a native enum and binary column in a down migration', function (): void {
             $diff = new SchemaDiff(tablesToAlter: [
                 'posts' => new TableDiff(
                     tableName: 'posts',
-                    columnsToModify: ['status' => new Column(name: 'status', type: 'string', default: 'live')],
+                    columnsToModify: [
+                        'status' => new Column(name: 'status', type: 'text'),
+                        'hash' => new Column(name: 'hash', type: 'text'),
+                    ],
+                    columnsToModifyFrom: [
+                        'status' => new Column(name: 'status', type: 'ENUM', nativeType: "enum('a','b')"),
+                        'hash' => new Column(name: 'hash', type: 'BINARY', length: 16, nativeType: 'binary(16)'),
+                    ],
                 ),
             ]);
 
-            expect(fn () => new MySqlGenerator()->generateDown($diff))->toThrow(
-                MigrationException::class,
-                "Column 'posts.status' is modified, but the diff holds no previous definition for it",
-            )->and(new MySqlGenerator()->generateUp($diff))->toBe([
-                "ALTER TABLE `posts` MODIFY COLUMN `status` VARCHAR(255) NOT NULL DEFAULT 'live'",
+            expect(new MySqlGenerator()->generateDown($diff))->toBe([
+                "ALTER TABLE `posts` MODIFY COLUMN `status` enum('a','b') NOT NULL",
+                'ALTER TABLE `posts` MODIFY COLUMN `hash` binary(16) NOT NULL',
             ]);
-        },
-    );
+        });
+
+        it('does not inherit a TEXT length when a column becomes a string without a length', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'body', type: 'varchar'),
+                new Column(name: 'body', type: 'TEXT', length: 65535, nativeType: 'text'),
+            ));
+
+            expect($statements)->toBe(['ALTER TABLE `posts` MODIFY COLUMN `body` VARCHAR(255) NOT NULL']);
+        });
+
+        it('drops a kept default the new type cannot hold', function (): void {
+            $diff = mysqlModifyDiff(
+                new Column(name: 'title', type: 'text'),
+                new Column(
+                    name: 'title',
+                    type: 'VARCHAR',
+                    length: 500,
+                    default: 'untitled',
+                    nativeType: 'varchar(500)',
+                ),
+            );
+
+            expect(new MySqlGenerator()->generateUp($diff))
+                ->toBe(['ALTER TABLE `posts` MODIFY COLUMN `title` TEXT NOT NULL'])
+                ->and(new MySqlGenerator()->generateDown($diff))
+                ->toBe(["ALTER TABLE `posts` MODIFY COLUMN `title` varchar(500) NOT NULL DEFAULT 'untitled'"]);
+        });
+
+        it('keeps inline UNIQUE in CREATE TABLE and ADD COLUMN', function (): void {
+            $column = new Column(name: 'email', type: 'varchar', length: 100, unique: true);
+
+            expect(new MySqlGenerator()->generateAddColumn('posts', $column))
+                ->toBe('ALTER TABLE `posts` ADD COLUMN `email` VARCHAR(100) NOT NULL UNIQUE')
+                ->and(new MySqlGenerator()->generateCreateTable(new Table(name: 'posts', columns: [$column])))
+                ->toContain('`email` VARCHAR(100) NOT NULL UNIQUE');
+        });
+
+        it('keeps a native timestamp when the entity declares datetime', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'seen_at', type: 'datetime', nullable: true),
+                new Column(name: 'seen_at', type: 'TIMESTAMP', nativeType: 'timestamp(3)'),
+            ));
+
+            expect($statements)->toBe(['ALTER TABLE `posts` MODIFY COLUMN `seen_at` timestamp(3) NULL']);
+        });
+
+        it('keeps a native ENUM when the entity declares an enum column', function (): void {
+            $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+                new Column(name: 'status', type: 'enum', nullable: true),
+                new Column(name: 'status', type: 'ENUM', nativeType: "enum('draft','live')"),
+            ));
+
+            expect($statements)->toBe(["ALTER TABLE `posts` MODIFY COLUMN `status` enum('draft','live') NULL"]);
+        });
+    });
 });
 
 /**
