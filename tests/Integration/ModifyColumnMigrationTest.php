@@ -10,6 +10,7 @@ use Marko\Database\MySql\Introspection\MySqlIntrospector;
 use Marko\Database\MySql\Sql\MySqlGenerator;
 use Marko\Database\MySql\Tests\Fixtures\IntegrationDatabase;
 use Marko\Database\Schema\Column;
+use Marko\Database\Schema\Expression;
 use Marko\Database\Schema\Table;
 
 /*
@@ -118,7 +119,7 @@ describe('MySQL column modification migrations', function (): void {
             ->and($columns[3]->nativeType)->toBe('decimal(12,4) unsigned')
             ->and($columns[3]->default)->toBe('0.0000')
             ->and($columns[4]->nativeType)->toBe('int unsigned')
-            ->and($columns[5]->default)->toBe('CURRENT_TIMESTAMP')
+            ->and($columns[5]->default)->toEqual(new Expression('CURRENT_TIMESTAMP'))
             ->and($columns[5]->onUpdateExpression)->toBe('CURRENT_TIMESTAMP');
     });
 

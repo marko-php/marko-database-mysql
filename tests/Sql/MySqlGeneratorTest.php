@@ -10,9 +10,11 @@ use Marko\Database\Diff\TableDiff;
 use Marko\Database\Exceptions\MigrationException;
 use Marko\Database\MySql\Sql\MySqlGenerator;
 use Marko\Database\Schema\Column;
+use Marko\Database\Schema\Expression;
 use Marko\Database\Schema\ForeignKey;
 use Marko\Database\Schema\Index;
 use Marko\Database\Schema\IndexType;
+use Marko\Database\Schema\Literal;
 use Marko\Database\Schema\Table;
 
 describe('MySqlGenerator', function (): void {
@@ -931,6 +933,80 @@ describe('MySqlGenerator', function (): void {
 
             expect($statements)->toBe(["ALTER TABLE `posts` MODIFY COLUMN `status` enum('draft','live') NULL"]);
         });
+    });
+});
+
+describe('MySqlGenerator expression defaults', function (): void {
+    beforeEach(function (): void {
+        $this->generator = new MySqlGenerator();
+    });
+
+    it('emits a parenthesized UUID() expression default', function (): void {
+        $sql = $this->generator->generateAddColumn(
+            'posts',
+            new Column(name: 'ref', type: 'uuid', default: new Expression('(UUID())')),
+        );
+
+        expect($sql)->toBe('ALTER TABLE `posts` ADD COLUMN `ref` CHAR(36) NOT NULL DEFAULT (UUID())');
+    });
+
+    it('emits CURRENT_TIMESTAMP(6) unquoted and unwrapped', function (): void {
+        $sql = $this->generator->generateAddColumn(
+            'posts',
+            new Column(name: 'created_at', type: 'datetime', default: 'CURRENT_TIMESTAMP(6)'),
+        );
+
+        expect($sql)->toBe(
+            'ALTER TABLE `posts` ADD COLUMN `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6)',
+        );
+    });
+
+    it('wraps a function call shortcut default in parentheses', function (): void {
+        $shortcut = $this->generator->generateAddColumn(
+            'posts',
+            new Column(name: 'ref', type: 'uuid', default: 'UUID()'),
+        );
+        $expression = $this->generator->generateAddColumn(
+            'posts',
+            new Column(name: 'tags', type: 'json', default: new Expression('JSON_ARRAY()')),
+        );
+
+        expect($shortcut)->toBe('ALTER TABLE `posts` ADD COLUMN `ref` CHAR(36) NOT NULL DEFAULT (UUID())')
+            ->and($expression)->toBe('ALTER TABLE `posts` ADD COLUMN `tags` JSON NOT NULL DEFAULT (JSON_ARRAY())');
+    });
+
+    it('quotes a literal default that looks like a function', function (): void {
+        $sql = $this->generator->generateAddColumn(
+            'posts',
+            new Column(name: 'label', type: 'varchar', default: new Literal('UUID()')),
+        );
+
+        expect($sql)->toBe("ALTER TABLE `posts` ADD COLUMN `label` VARCHAR(255) NOT NULL DEFAULT 'UUID()'");
+    });
+
+    it('quotes a string that merely starts with a keyword', function (): void {
+        $nullish = $this->generator->generateAddColumn(
+            'posts',
+            new Column(name: 'mode', type: 'varchar', default: 'Nullify'),
+        );
+        $nowish = $this->generator->generateAddColumn(
+            'posts',
+            new Column(name: 'label', type: 'varchar', default: 'NOW() or later'),
+        );
+
+        expect($nullish)->toBe("ALTER TABLE `posts` ADD COLUMN `mode` VARCHAR(255) NOT NULL DEFAULT 'Nullify'")
+            ->and($nowish)->toBe(
+                "ALTER TABLE `posts` ADD COLUMN `label` VARCHAR(255) NOT NULL DEFAULT 'NOW() or later'",
+            );
+    });
+
+    it('keeps an expression default when the type changes to one that cannot hold a literal', function (): void {
+        $statements = $this->generator->generateUp(mysqlModifyDiff(
+            new Column(name: 'ref', type: 'text'),
+            new Column(name: 'ref', type: 'varchar', length: 36, default: new Expression('uuid()')),
+        ));
+
+        expect($statements)->toBe(['ALTER TABLE `posts` MODIFY COLUMN `ref` TEXT NOT NULL DEFAULT (uuid())']);
     });
 });
 

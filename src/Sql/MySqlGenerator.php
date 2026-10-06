@@ -9,9 +9,11 @@ use Marko\Database\Diff\SqlGeneratorInterface;
 use Marko\Database\Diff\TableDiff;
 use Marko\Database\Exceptions\MigrationException;
 use Marko\Database\Schema\Column;
+use Marko\Database\Schema\Expression;
 use Marko\Database\Schema\ForeignKey;
 use Marko\Database\Schema\Index;
 use Marko\Database\Schema\IndexType;
+use Marko\Database\Schema\Literal;
 use Marko\Database\Schema\Table;
 
 /**
@@ -52,17 +54,11 @@ class MySqlGenerator implements SqlGeneratorInterface
     ];
 
     /**
-     * SQL expression keywords that should not be quoted.
-     *
-     * @var array<string>
+     * Expression defaults MySQL accepts without parentheses: CURRENT_TIMESTAMP and its synonyms, with or
+     * without a precision. Every other expression default must be parenthesized (MySQL 8.0.13+).
      */
-    private const array SQL_EXPRESSIONS = [
-        'CURRENT_TIMESTAMP',
-        'CURRENT_DATE',
-        'CURRENT_TIME',
-        'NOW()',
-        'NULL',
-    ];
+    private const string BARE_EXPRESSION_PATTERN =
+        '/^(?:(?:CURRENT_TIMESTAMP|LOCALTIMESTAMP|LOCALTIME)(?:\(\d*\))?|NOW\(\d*\))$/i';
 
     /**
      * Native base types whose length is part of the type, so a different length is a different type.
@@ -407,9 +403,12 @@ class MySqlGenerator implements SqlGeneratorInterface
         $nativeType = $this->nativeTypeApplies($resolved, $length) ? $resolved->nativeType : null;
         $type = $nativeType ?? $this->mapType($resolved->type, $length);
 
-        // A kept default goes when the entity changes the column to a type that cannot hold it (VARCHAR to
-        // TEXT); the down migration restores it with the previous type
-        $keptDefaultFits = $column->default !== null || !$this->baseTypeIn($type, self::NO_LITERAL_DEFAULT_TYPES);
+        // A kept literal default goes when the entity changes the column to a type that cannot hold it
+        // (VARCHAR to TEXT); the down migration restores it with the previous type. An expression default
+        // fits any type (MySQL 8.0.13+), so it stays.
+        $keptDefaultFits = $column->default !== null
+            || $this->isExpressionDefault($resolved->default)
+            || !$this->baseTypeIn($type, self::NO_LITERAL_DEFAULT_TYPES);
 
         return new Column(
             name: $resolved->name,
@@ -489,14 +488,27 @@ class MySqlGenerator implements SqlGeneratorInterface
     }
 
     /**
-     * Format a default value for SQL.
+     * Format a default value for SQL: an Expression (or a shortcut string such as `UUID()`) as an expression
+     * default, a Literal or any other string quoted.
      */
     private function formatDefault(
         mixed $default,
     ): string {
-        // Check if it's a SQL expression
-        if (is_string($default) && $this->isSqlExpression($default)) {
-            return $default;
+        if ($default instanceof Expression) {
+            return $this->formatExpression($default->sql);
+        }
+
+        if ($default instanceof Literal) {
+            return "'" . addslashes($default->value) . "'";
+        }
+
+        if (is_string($default) && Expression::isShortcut($default)) {
+            return $this->formatExpression($default);
+        }
+
+        // Kept from the original keyword list: a string 'NULL' is no default rather than the text NULL
+        if (is_string($default) && strtoupper($default) === 'NULL') {
+            return 'NULL';
         }
 
         // Boolean values
@@ -522,18 +534,54 @@ class MySqlGenerator implements SqlGeneratorInterface
         return (string) $default;
     }
 
-    /**
-     * Check if a string is a SQL expression.
-     */
-    private function isSqlExpression(
-        string $value,
+    private function isExpressionDefault(
+        mixed $default,
     ): bool {
-        $upperValue = strtoupper($value);
+        return $default instanceof Expression || (is_string($default) && Expression::isShortcut($default));
+    }
 
-        return array_any(
-            self::SQL_EXPRESSIONS,
-            fn ($expression) => $upperValue === $expression || str_starts_with($upperValue, $expression),
-        );
+    /**
+     * An expression default as MySQL 8.0.13+ accepts it: the CURRENT_TIMESTAMP family as written, anything
+     * else in parentheses (unless it already is).
+     */
+    private function formatExpression(
+        string $sql,
+    ): string {
+        $sql = trim($sql);
+
+        if (preg_match(self::BARE_EXPRESSION_PATTERN, $sql) === 1 || $this->isParenthesized($sql)) {
+            return $sql;
+        }
+
+        return "($sql)";
+    }
+
+    /**
+     * Whether the first character opens a parenthesis that the last character closes.
+     */
+    private function isParenthesized(
+        string $sql,
+    ): bool {
+        if (!str_starts_with($sql, '(') || !str_ends_with($sql, ')')) {
+            return false;
+        }
+
+        $depth = 0;
+        $lastIndex = strlen($sql) - 1;
+
+        for ($index = 0; $index <= $lastIndex; $index++) {
+            $depth += match ($sql[$index]) {
+                '(' => 1,
+                ')' => -1,
+                default => 0,
+            };
+
+            if ($depth === 0 && $index < $lastIndex) {
+                return false;
+            }
+        }
+
+        return $depth === 0;
     }
 
     /**

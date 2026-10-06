@@ -5,15 +5,24 @@ declare(strict_types=1);
 namespace Marko\Database\MySql\Introspection;
 
 use Marko\Database\Connection\ConnectionInterface;
+use Marko\Database\Exceptions\MigrationException;
 use Marko\Database\Introspection\IntrospectorInterface;
 use Marko\Database\Schema\Column;
+use Marko\Database\Schema\Expression;
 use Marko\Database\Schema\ForeignKey;
 use Marko\Database\Schema\Index;
 use Marko\Database\Schema\IndexType;
+use Marko\Database\Schema\Literal;
 use Marko\Database\Schema\Table;
 
 readonly class MySqlIntrospector implements IntrospectorInterface
 {
+    /**
+     * The CURRENT_TIMESTAMP family, the only expression defaults a server without DEFAULT_GENERATED reports.
+     */
+    private const string TIMESTAMP_KEYWORD_PATTERN =
+        '/^(?:CURRENT_TIMESTAMP|LOCALTIMESTAMP|LOCALTIME)(?:\(\d*\))?$/i';
+
     public function __construct(
         private ConnectionInterface $connection,
         private string $database,
@@ -114,7 +123,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface
                 type: strtoupper($row['DATA_TYPE']),
                 length: $length,
                 nullable: $row['IS_NULLABLE'] === 'YES',
-                default: $row['COLUMN_DEFAULT'],
+                default: $this->parseDefault($row['COLUMN_DEFAULT'], $row['EXTRA']),
                 unique: $isUnique,
                 primaryKey: $isPrimaryKey,
                 autoIncrement: str_contains($row['EXTRA'], 'auto_increment'),
@@ -125,6 +134,34 @@ readonly class MySqlIntrospector implements IntrospectorInterface
         }
 
         return $columns;
+    }
+
+    /**
+     * The default the column declares. MySQL 8.0.13+ marks an expression default with DEFAULT_GENERATED in
+     * EXTRA; it is returned as an Expression. A literal that would otherwise read as an expression shortcut
+     * (`now()` stored as text) is returned as a Literal, so a down migration restores it quoted. Servers that
+     * never report DEFAULT_GENERATED (MySQL before 8.0.13, MariaDB) can only have the CURRENT_TIMESTAMP family
+     * as an expression, so that stays a plain string, which reads as the expression it is.
+     *
+     * @throws MigrationException Only for an empty expression, which MySQL never reports as generated
+     */
+    private function parseDefault(
+        ?string $default,
+        string $extra,
+    ): mixed {
+        if ($default === null) {
+            return null;
+        }
+
+        if (str_contains(strtoupper($extra), 'DEFAULT_GENERATED') && trim($default) !== '') {
+            return new Expression($default);
+        }
+
+        if (Expression::isShortcut($default) && preg_match(self::TIMESTAMP_KEYWORD_PATTERN, $default) !== 1) {
+            return new Literal($default);
+        }
+
+        return $default;
     }
 
     /**

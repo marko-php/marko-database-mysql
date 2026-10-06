@@ -9,11 +9,42 @@ use Marko\Database\Connection\StatementInterface;
 use Marko\Database\Introspection\IntrospectorInterface;
 use Marko\Database\MySql\Introspection\MySqlIntrospector;
 use Marko\Database\Schema\Column;
+use Marko\Database\Schema\Expression;
 use Marko\Database\Schema\ForeignKey;
 use Marko\Database\Schema\Index;
 use Marko\Database\Schema\IndexType;
+use Marko\Database\Schema\Literal;
 use Marko\Database\Schema\Table;
 use RuntimeException;
+
+/**
+ * The columns of a table whose varchar columns have the given COLUMN_DEFAULT and EXTRA values, in order.
+ *
+ * @param list<array{0: string, 1: string}> $defaults
+ * @return array<Column>
+ */
+function mysqlColumnsWithDefaults(
+    array $defaults,
+): array {
+    $connection = createMockConnection([
+        'information_schema.columns' => array_map(
+            static fn (array $default, int $index): array => [
+                'COLUMN_NAME' => "col_$index",
+                'DATA_TYPE' => 'varchar',
+                'CHARACTER_MAXIMUM_LENGTH' => '255',
+                'IS_NULLABLE' => 'NO',
+                'COLUMN_DEFAULT' => $default[0],
+                'EXTRA' => $default[1],
+                'COLUMN_TYPE' => 'varchar(255)',
+                'COLLATION_NAME' => null,
+            ],
+            $defaults,
+            array_keys($defaults),
+        ),
+    ]);
+
+    return new MySqlIntrospector($connection, 'testdb')->getColumns('posts');
+}
 
 /**
  * Creates a mock connection that returns predefined query results.
@@ -261,7 +292,41 @@ describe('MySqlIntrospector', function (): void {
         expect($columns[0]->default)
             ->toBe('active')
             ->and($columns[1]->default)->toBe('0')
-            ->and($columns[2]->default)->toBe('CURRENT_TIMESTAMP');
+            ->and($columns[2]->default)->toEqual(new Expression('CURRENT_TIMESTAMP'));
+    });
+
+    it('reads a DEFAULT_GENERATED default as an expression', function (): void {
+        $columns = mysqlColumnsWithDefaults([
+            ['uuid()', 'DEFAULT_GENERATED'],
+            ['CURRENT_TIMESTAMP(6)', 'DEFAULT_GENERATED on update CURRENT_TIMESTAMP(6)'],
+        ]);
+
+        expect($columns[0]->default)->toEqual(new Expression('uuid()'))
+            ->and($columns[1]->default)->toEqual(new Expression('CURRENT_TIMESTAMP(6)'));
+    });
+
+    it('reads a literal default that looks like a function as a literal', function (): void {
+        $columns = mysqlColumnsWithDefaults([['now()', '']]);
+
+        expect($columns[0]->default)->toEqual(new Literal('now()'));
+    });
+
+    it('keeps a plain string default as a string', function (): void {
+        $columns = mysqlColumnsWithDefaults([['draft', '']]);
+
+        expect($columns[0]->default)->toBe('draft');
+    });
+
+    it('keeps CURRENT_TIMESTAMP without DEFAULT_GENERATED as a string', function (): void {
+        $columns = mysqlColumnsWithDefaults([
+            ['CURRENT_TIMESTAMP', ''],
+            ['current_timestamp()', 'on update current_timestamp()'],
+            ['LOCALTIMESTAMP', ''],
+        ]);
+
+        expect($columns[0]->default)->toBe('CURRENT_TIMESTAMP')
+            ->and($columns[1]->default)->toBe('current_timestamp()')
+            ->and($columns[2]->default)->toBe('LOCALTIMESTAMP');
     });
 
     it('reads the native column definition the restating of a column needs', function (): void {
