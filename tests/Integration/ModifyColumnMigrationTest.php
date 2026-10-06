@@ -21,7 +21,7 @@ use Marko\Database\Schema\Table;
  *
  * The table is created with raw DDL because it holds what an entity cannot
  * declare: DECIMAL precision, UNSIGNED, a column collation and ON UPDATE.
- * Entity columns use MySQL type names (int, varchar, decimal, timestamp) so
+ * Entity columns use the abstract type names (integer, varchar, decimal, timestamp) so
  * the diff compares like with like.
  *
  * Settings come from tests/Fixtures/IntegrationDatabase. With
@@ -38,7 +38,7 @@ function mysqlModifyColumnTable(
     return new Table(
         name: 'modify_column_products',
         columns: [
-            new Column(name: 'id', type: 'int', primaryKey: true, autoIncrement: true),
+            new Column(name: 'id', type: 'integer', primaryKey: true, autoIncrement: true),
             ...$columns,
         ],
     );
@@ -93,7 +93,7 @@ beforeEach(function (): void {
         new Column(name: 'title', type: 'varchar', nullable: true),
         new Column(name: 'code', type: 'varchar', nullable: true),
         new Column(name: 'price', type: 'decimal', nullable: true),
-        new Column(name: 'author_id', type: 'int', nullable: true),
+        new Column(name: 'author_id', type: 'integer', nullable: true),
         new Column(name: 'updated_at', type: 'timestamp', nullable: true),
     );
 });
@@ -117,7 +117,7 @@ describe('MySQL column modification migrations', function (): void {
             ->and($columns[1]->default)->toBe('untitled')
             ->and($columns[2]->collation)->toBe('utf8mb4_bin')
             ->and($columns[3]->nativeType)->toBe('decimal(12,4) unsigned')
-            ->and($columns[3]->default)->toBe('0.0000')
+            ->and($columns[3]->default)->toBe(0.0)
             ->and($columns[4]->nativeType)->toBe('int unsigned')
             ->and($columns[5]->default)->toEqual(new Expression('CURRENT_TIMESTAMP'))
             ->and($columns[5]->onUpdateExpression)->toBe('CURRENT_TIMESTAMP');

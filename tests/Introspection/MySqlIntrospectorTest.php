@@ -47,6 +47,38 @@ function mysqlColumnsWithDefaults(
 }
 
 /**
+ * The columns of a table with the given (DATA_TYPE, COLUMN_TYPE, COLUMN_DEFAULT) definitions, as MySQL or, with
+ * $version naming MariaDB, as MariaDB reports them.
+ *
+ * @param list<array{0: string, 1: string, 2: string|null}> $definitions
+ * @return array<Column>
+ */
+function mysqlTypedColumns(
+    array $definitions,
+    string $version = '8.4.3',
+): array {
+    $connection = createMockConnection([
+        'VERSION()' => [['version' => $version]],
+        'information_schema.columns' => array_map(
+            static fn (array $definition, int $index): array => [
+                'COLUMN_NAME' => "col_$index",
+                'DATA_TYPE' => $definition[0],
+                'CHARACTER_MAXIMUM_LENGTH' => null,
+                'IS_NULLABLE' => 'NO',
+                'COLUMN_DEFAULT' => $definition[2],
+                'EXTRA' => '',
+                'COLUMN_TYPE' => $definition[1],
+                'COLLATION_NAME' => null,
+            ],
+            $definitions,
+            array_keys($definitions),
+        ),
+    ]);
+
+    return new MySqlIntrospector($connection, 'testdb')->getColumns('items');
+}
+
+/**
  * Creates a mock connection that returns predefined query results.
  *
  * @param array<string, array<int, array<string, mixed>>> $queryResults Map of SQL patterns to results
@@ -170,7 +202,7 @@ describe('MySqlIntrospector', function (): void {
             ->and($columns[1]->name)->toBe('name');
     });
 
-    it('maps MySQL data types to Column value objects', function (): void {
+    it('maps MySQL data types to the abstract type names entities use', function (): void {
         $connection = createMockConnection([
             'information_schema.columns' => [
                 [
@@ -210,10 +242,10 @@ describe('MySqlIntrospector', function (): void {
         $columns = $introspector->getColumns('posts');
 
         expect($columns[0]->type)
-            ->toBe('BIGINT')
-            ->and($columns[1]->type)->toBe('VARCHAR')
+            ->toBe('bigint')
+            ->and($columns[1]->type)->toBe('varchar')
             ->and($columns[1]->length)->toBe(100)
-            ->and($columns[2]->type)->toBe('TEXT');
+            ->and($columns[2]->type)->toBe('text');
     });
 
     it('detects nullable columns', function (): void {
@@ -291,7 +323,7 @@ describe('MySqlIntrospector', function (): void {
 
         expect($columns[0]->default)
             ->toBe('active')
-            ->and($columns[1]->default)->toBe('0')
+            ->and($columns[1]->default)->toBe(0)
             ->and($columns[2]->default)->toEqual(new Expression('CURRENT_TIMESTAMP'));
     });
 
@@ -327,6 +359,82 @@ describe('MySqlIntrospector', function (): void {
         expect($columns[0]->default)->toBe('CURRENT_TIMESTAMP')
             ->and($columns[1]->default)->toBe('current_timestamp()')
             ->and($columns[2]->default)->toBe('LOCALTIMESTAMP');
+    });
+
+    it('reads tinyint(1) as boolean and char(36) as uuid', function (): void {
+        $columns = mysqlTypedColumns([
+            ['tinyint', 'tinyint(1)', null],
+            ['char', 'char(36)', null],
+            ['tinyint', 'tinyint', null],
+            ['char', 'char(2)', null],
+            ['int', 'int unsigned', null],
+        ]);
+
+        expect(array_map(static fn (Column $column): string => $column->type, $columns))
+            ->toBe(['boolean', 'uuid', 'tinyint', 'char', 'integer'])
+            ->and($columns[0]->nativeType)->toBe('tinyint(1)')
+            ->and($columns[1]->nativeType)->toBe('char(36)');
+    });
+
+    it('casts integer, boolean and decimal defaults to their PHP types', function (): void {
+        $columns = mysqlTypedColumns([
+            ['int', 'int', '0'],
+            ['bigint', 'bigint', '-42'],
+            ['tinyint', 'tinyint(1)', '0'],
+            ['tinyint', 'tinyint(1)', '1'],
+            ['decimal', 'decimal(10,2)', '0.00'],
+            ['double', 'double', '1.5'],
+            ['varchar', 'varchar(255)', '0'],
+        ]);
+
+        expect(array_map(static fn (Column $column): mixed => $column->default, $columns))
+            ->toBe([0, -42, false, true, 0.0, 1.5, '0']);
+    });
+
+    it('unquotes MariaDB string defaults', function (): void {
+        $columns = mysqlTypedColumns([
+            ['varchar', 'varchar(255)', "'abc'"],
+            ['varchar', 'varchar(255)', "'it''s'"],
+            ['varchar', 'varchar(255)', "'now()'"],
+            ['varchar', 'varchar(255)', "''"],
+        ], '10.11.6-MariaDB');
+
+        expect($columns[0]->default)->toBe('abc')
+            ->and($columns[1]->default)->toBe("it's")
+            ->and($columns[2]->default)->toEqual(new Literal('now()'))
+            ->and($columns[3]->default)->toBe('');
+    });
+
+    it('reads the MariaDB NULL default as no default', function (): void {
+        $columns = mysqlTypedColumns([['varchar', 'varchar(255)', 'NULL']], '10.11.6-MariaDB');
+
+        expect($columns[0]->default)->toBeNull();
+    });
+
+    it(
+        'reads MariaDB unquoted defaults as expressions and current_timestamp() as CURRENT_TIMESTAMP',
+        function (): void {
+            $columns = mysqlTypedColumns([
+                ['timestamp', 'timestamp', 'current_timestamp()'],
+                ['timestamp', 'timestamp(3)', 'current_timestamp(3)'],
+                ['char', 'char(36)', 'uuid()'],
+                ['int', 'int', '0'],
+                ['tinyint', 'tinyint(1)', '1'],
+            ], '10.11.6-MariaDB');
+
+            expect($columns[0]->default)->toBe('CURRENT_TIMESTAMP')
+                ->and($columns[1]->default)->toBe('CURRENT_TIMESTAMP(3)')
+                ->and($columns[2]->default)->toEqual(new Expression('uuid()'))
+                ->and($columns[3]->default)->toBe(0)
+                ->and($columns[4]->default)->toBeTrue();
+        },
+    );
+
+    it('keeps a MySQL default with quotes in it as the literal it is', function (): void {
+        $columns = mysqlTypedColumns([['varchar', 'varchar(255)', "'abc'"], ['varchar', 'varchar(255)', 'NULL']]);
+
+        expect($columns[0]->default)->toBe("'abc'")
+            ->and($columns[1]->default)->toBe('NULL');
     });
 
     it('reads the native column definition the restating of a column needs', function (): void {
@@ -513,6 +621,24 @@ describe('MySqlIntrospector', function (): void {
             ->and($indexes[0]->columns)->toBe(['email'])
             ->and($indexes[1]->name)->toBe('idx_name_created')
             ->and($indexes[1]->columns)->toBe(['name', 'created_at']);
+    });
+
+    it('returns single-column unique indexes from getIndexes', function (): void {
+        $connection = createMockConnection([
+            'information_schema.statistics' => [
+                [
+                    'INDEX_NAME' => 'email',
+                    'COLUMN_NAME' => 'email',
+                    'NON_UNIQUE' => '0',
+                    'INDEX_TYPE' => 'BTREE',
+                    'SEQ_IN_INDEX' => '1',
+                ],
+            ],
+        ]);
+
+        $table = new MySqlIntrospector($connection, 'testdb')->getIndexes('users');
+
+        expect($table)->toEqual([new Index(name: 'email', columns: ['email'], type: IndexType::Unique)]);
     });
 
     it('detects unique indexes', function (): void {
@@ -734,9 +860,7 @@ describe('MySqlIntrospector', function (): void {
                 if (str_contains($sql, 'information_schema.statistics')) {
                     $this->callOrder[] = 'indexes';
 
-                    // Return a non-unique index (not filtered out)
-                    // Single-column unique indexes are represented by the column's
-                    // unique property and are filtered from the indexes list
+                    // Return a non-unique index
                     return [
                         [
                             'INDEX_NAME' => 'idx_id',

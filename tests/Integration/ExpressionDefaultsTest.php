@@ -39,11 +39,11 @@ beforeEach(function (): void {
     $this->generator = new MySqlGenerator();
     $this->introspector = new MySqlIntrospector($this->connection, $config->database);
 
-    // MySQL type names (int, varchar, json, timestamp), so the diff compares like with like
+    // Abstract type names (integer, varchar, json, timestamp), as the introspector reports them
     $this->entityTable = new Table(
         name: 'expression_default_items',
         columns: [
-            new Column(name: 'id', type: 'int', primaryKey: true, autoIncrement: true),
+            new Column(name: 'id', type: 'integer', primaryKey: true, autoIncrement: true),
             new Column(name: 'ref', type: 'varchar', length: 36, default: new Expression('(UUID())')),
             new Column(name: 'tags', type: 'json', default: new Expression('JSON_ARRAY()')),
             new Column(name: 'created_at', type: 'timestamp', default: 'CURRENT_TIMESTAMP'),

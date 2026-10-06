@@ -934,6 +934,48 @@ describe('MySqlGenerator', function (): void {
             expect($statements)->toBe(["ALTER TABLE `posts` MODIFY COLUMN `status` enum('draft','live') NULL"]);
         });
     });
+    it('adds the replacement index before dropping the unique index it replaces', function (): void {
+        $diff = new SchemaDiff(tablesToAlter: ['users' => new TableDiff(
+            tableName: 'users',
+            indexesToAdd: [new Index(name: 'users_team_id_index', columns: ['team_id'])],
+            indexesToDrop: [new Index(name: 'team_id', columns: ['team_id'], type: IndexType::Unique)],
+        )]);
+
+        expect(new MySqlGenerator()->generateUp($diff))->toBe([
+            'CREATE INDEX `users_team_id_index` ON `users` (`team_id`)',
+            'DROP INDEX `team_id` ON `users`',
+        ]);
+    });
+
+    it('restores the unique index before dropping the replacement index in down', function (): void {
+        $diff = new SchemaDiff(tablesToAlter: ['users' => new TableDiff(
+            tableName: 'users',
+            indexesToAdd: [new Index(name: 'users_team_id_index', columns: ['team_id'])],
+            indexesToDrop: [new Index(name: 'team_id', columns: ['team_id'], type: IndexType::Unique)],
+        )]);
+
+        expect(new MySqlGenerator()->generateDown($diff))->toBe([
+            'CREATE UNIQUE INDEX `team_id` ON `users` (`team_id`)',
+            'DROP INDEX `users_team_id_index` ON `users`',
+        ]);
+    });
+
+    it('keeps dropping indexes before dropping columns and adding indexes after adding columns', function (): void {
+        $diff = new SchemaDiff(tablesToAlter: ['users' => new TableDiff(
+            tableName: 'users',
+            columnsToAdd: [new Column(name: 'slug', type: 'varchar')],
+            columnsToDrop: [new Column(name: 'legacy', type: 'varchar')],
+            indexesToAdd: [new Index(name: 'users_slug_index', columns: ['slug'])],
+            indexesToDrop: [new Index(name: 'users_legacy_index', columns: ['legacy'])],
+        )]);
+
+        expect(new MySqlGenerator()->generateUp($diff))->toBe([
+            'DROP INDEX `users_legacy_index` ON `users`',
+            'ALTER TABLE `users` DROP COLUMN `legacy`',
+            'ALTER TABLE `users` ADD COLUMN `slug` VARCHAR(255) NOT NULL',
+            'CREATE INDEX `users_slug_index` ON `users` (`slug`)',
+        ]);
+    });
 });
 
 describe('MySqlGenerator expression defaults', function (): void {

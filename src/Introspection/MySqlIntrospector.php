@@ -23,6 +23,47 @@ readonly class MySqlIntrospector implements IntrospectorInterface
     private const string TIMESTAMP_KEYWORD_PATTERN =
         '/^(?:CURRENT_TIMESTAMP|LOCALTIMESTAMP|LOCALTIME)(?:\(\d*\))?$/i';
 
+    /**
+     * MySQL data types mapped to the abstract names entities declare (the inverse of MySqlGenerator's type map), so
+     * both sides of the schema diff use one vocabulary. Unlisted types keep the name MySQL reports, lowercased.
+     *
+     * @var array<string, string>
+     */
+    private const array TYPE_MAP = [
+        'int' => 'integer',
+        'integer' => 'integer',
+        'bigint' => 'bigint',
+        'smallint' => 'smallint',
+        'tinyint' => 'tinyint',
+        'varchar' => 'varchar',
+        'char' => 'char',
+        'text' => 'text',
+        'datetime' => 'datetime',
+        'date' => 'date',
+        'time' => 'time',
+        'timestamp' => 'timestamp',
+        'decimal' => 'decimal',
+        'float' => 'float',
+        'double' => 'double',
+        'blob' => 'blob',
+        'json' => 'json',
+    ];
+
+    /**
+     * Full column types that name an abstract type on their own: MySqlGenerator renders `boolean` as TINYINT(1) and
+     * `uuid` as CHAR(36), and MySQL has no other way to store either.
+     *
+     * @var array<string, string>
+     */
+    private const array COLUMN_TYPE_MAP = [
+        'tinyint(1)' => 'boolean',
+        'char(36)' => 'uuid',
+    ];
+
+    private const array INTEGER_TYPES = ['integer', 'bigint', 'smallint', 'tinyint'];
+
+    private const array FLOAT_TYPES = ['decimal', 'float', 'double'];
+
     public function __construct(
         private ConnectionInterface $connection,
         private string $database,
@@ -54,11 +95,10 @@ readonly class MySqlIntrospector implements IntrospectorInterface
         }
 
         $primaryKeyColumns = $this->getPrimaryKey($name);
+        // Column::$unique is informational; the index diff matches unique columns with their unique indexes
         $uniqueColumns = $this->getUniqueColumns($name);
-        // Set unique=true on columns, but keep indexes (don't filter)
-        // The diff calculator will handle matching column unique=true with indexes
         $columns = $this->getColumns($name, $primaryKeyColumns, $uniqueColumns);
-        $indexes = $this->getIndexes($name, []);  // Don't filter any indexes
+        $indexes = $this->getIndexes($name);
         $foreignKeys = $this->getForeignKeys($name);
 
         return new Table(
@@ -107,6 +147,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface
         SQL;
 
         $rows = $this->connection->query($sql, [$this->database, $table]);
+        $mariaDb = $this->isMariaDb();
         $columns = [];
 
         foreach ($rows as $row) {
@@ -118,12 +159,17 @@ readonly class MySqlIntrospector implements IntrospectorInterface
             $isPrimaryKey = in_array($columnName, $primaryKeyColumns, true);
             $isUnique = in_array($columnName, $uniqueColumns, true);
 
+            $type = $this->mapType($row['DATA_TYPE'], $row['COLUMN_TYPE']);
+            $default = $mariaDb
+                ? $this->parseMariaDbDefault($row['COLUMN_DEFAULT'])
+                : $this->parseDefault($row['COLUMN_DEFAULT'], $row['EXTRA']);
+
             $columns[] = new Column(
                 name: $columnName,
-                type: strtoupper($row['DATA_TYPE']),
+                type: $type,
                 length: $length,
                 nullable: $row['IS_NULLABLE'] === 'YES',
-                default: $this->parseDefault($row['COLUMN_DEFAULT'], $row['EXTRA']),
+                default: $this->castDefault($default, $type),
                 unique: $isUnique,
                 primaryKey: $isPrimaryKey,
                 autoIncrement: str_contains($row['EXTRA'], 'auto_increment'),
@@ -162,6 +208,88 @@ readonly class MySqlIntrospector implements IntrospectorInterface
         }
 
         return $default;
+    }
+
+    /**
+     * The default as MariaDB (10.2.7+) reports it: a string literal quoted (`'abc'`, with quotes inside doubled), no
+     * default or DEFAULT NULL as the string `NULL`, and a number or an expression unquoted. `current_timestamp()`,
+     * MariaDB's spelling of CURRENT_TIMESTAMP, comes back as CURRENT_TIMESTAMP so it reads as MySQL reports it.
+     *
+     * @throws MigrationException Only for an empty expression, which MariaDB reports quoted
+     */
+    private function parseMariaDbDefault(
+        ?string $default,
+    ): mixed {
+        if ($default === null || strtoupper($default) === 'NULL') {
+            return null;
+        }
+
+        if (preg_match("/^'((?:[^']|'')*)'$/s", $default, $matches) === 1) {
+            $value = str_replace("''", "'", $matches[1]);
+
+            return Expression::isShortcut($value) ? new Literal($value) : $value;
+        }
+
+        if (is_numeric($default)) {
+            return $default;
+        }
+
+        if (preg_match('/^current_timestamp\((\d*)\)$/i', $default, $matches) === 1) {
+            return $matches[1] === '' ? 'CURRENT_TIMESTAMP' : "CURRENT_TIMESTAMP({$matches[1]})";
+        }
+
+        return new Expression($default);
+    }
+
+    /**
+     * A literal default as the PHP value an entity declares for the column's type: an integer for the integer types,
+     * a bool for `boolean`, a float for the decimal types. Anything else (a string column's default, an expression,
+     * a value that does not fit the type) is returned unchanged.
+     */
+    private function castDefault(
+        mixed $default,
+        string $type,
+    ): mixed {
+        if (!is_string($default)) {
+            return $default;
+        }
+
+        if ($type === 'boolean' && ($default === '0' || $default === '1')) {
+            return $default === '1';
+        }
+
+        if (in_array($type, self::INTEGER_TYPES, true) && preg_match('/^-?\d+$/', $default) === 1) {
+            return (int) $default;
+        }
+
+        if (in_array($type, self::FLOAT_TYPES, true) && is_numeric($default)) {
+            return (float) $default;
+        }
+
+        return $default;
+    }
+
+    /**
+     * The abstract type of a column from its DATA_TYPE and full COLUMN_TYPE (`tinyint(1)` is `boolean`).
+     */
+    private function mapType(
+        string $dataType,
+        string $columnType,
+    ): string {
+        $columnType = strtolower($columnType);
+        $dataType = strtolower($dataType);
+
+        return self::COLUMN_TYPE_MAP[$columnType] ?? self::TYPE_MAP[$dataType] ?? $dataType;
+    }
+
+    /**
+     * Whether the server is MariaDB, which reports column defaults differently from MySQL.
+     */
+    private function isMariaDb(): bool
+    {
+        $rows = $this->connection->query('SELECT VERSION() AS version');
+
+        return str_contains(strtolower((string) ($rows[0]['version'] ?? '')), 'mariadb');
     }
 
     /**
@@ -212,13 +340,12 @@ readonly class MySqlIntrospector implements IntrospectorInterface
     }
 
     /**
-     * @param array<string> $uniqueColumns Columns that have single-column unique indexes
-     *                                     (these are represented by the column's unique property)
+     * Every index except the primary key, single-column unique indexes (inline UNIQUE) included.
+     *
      * @return array<Index>
      */
     public function getIndexes(
         string $table,
-        array $uniqueColumns = [],
     ): array {
         $sql = <<<'SQL'
             SELECT
@@ -253,16 +380,6 @@ readonly class MySqlIntrospector implements IntrospectorInterface
         $indexes = [];
         foreach ($indexData as $name => $data) {
             if ($name === 'PRIMARY') {
-                continue;
-            }
-
-            // Skip single-column unique indexes - these are represented by the
-            // column's unique property instead, to match how entities define them
-            if (
-                (string) $data['non_unique'] === '0'
-                && count($data['columns']) === 1
-                && in_array($data['columns'][0], $uniqueColumns, true)
-            ) {
                 continue;
             }
 

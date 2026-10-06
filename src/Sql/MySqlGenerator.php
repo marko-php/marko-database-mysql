@@ -664,6 +664,13 @@ class MySqlGenerator implements SqlGeneratorInterface
             $statements[] = $this->generateDropForeignKey($tableDiff->tableName, $foreignKey->name);
         }
 
+        $replacementIndexes = $this->replacementIndexes($tableDiff);
+
+        // A replacement index goes in before the index it replaces, which a foreign key may still need
+        foreach ($replacementIndexes as $index) {
+            $statements[] = $this->generateAddIndex($tableDiff->tableName, $index);
+        }
+
         // Drop indexes
         foreach ($tableDiff->indexesToDrop as $index) {
             $statements[] = $this->generateDropIndex($tableDiff->tableName, $index->name);
@@ -684,7 +691,9 @@ class MySqlGenerator implements SqlGeneratorInterface
 
         // Add indexes
         foreach ($tableDiff->indexesToAdd as $index) {
-            $statements[] = $this->generateAddIndex($tableDiff->tableName, $index);
+            if (!in_array($index, $replacementIndexes, true)) {
+                $statements[] = $this->generateAddIndex($tableDiff->tableName, $index);
+            }
         }
 
         // Add foreign keys last
@@ -710,9 +719,13 @@ class MySqlGenerator implements SqlGeneratorInterface
             $statements[] = $this->generateDropForeignKey($tableDiff->tableName, $foreignKey->name);
         }
 
-        // Reverse: drop indexes that were added
+        $replacementIndexes = $this->replacementIndexes($tableDiff);
+
+        // Reverse: drop indexes that were added (a replacement only once the index it replaced is back)
         foreach ($tableDiff->indexesToAdd as $index) {
-            $statements[] = $this->generateDropIndex($tableDiff->tableName, $index->name);
+            if (!in_array($index, $replacementIndexes, true)) {
+                $statements[] = $this->generateDropIndex($tableDiff->tableName, $index->name);
+            }
         }
 
         // Reverse: drop columns that were added
@@ -733,12 +746,37 @@ class MySqlGenerator implements SqlGeneratorInterface
             $statements[] = $this->generateAddIndex($tableDiff->tableName, $index);
         }
 
+        foreach ($replacementIndexes as $index) {
+            $statements[] = $this->generateDropIndex($tableDiff->tableName, $index->name);
+        }
+
         // Reverse: add foreign keys that were dropped
         foreach ($tableDiff->foreignKeysToDrop as $foreignKey) {
             $statements[] = $this->generateAddForeignKey($tableDiff->tableName, $foreignKey);
         }
 
         return $statements;
+    }
+
+    /**
+     * The added indexes that replace a dropped index on the same columns, such as the plain index the diff adds
+     * when a foreign key column stops being unique. InnoDB refuses to drop the last index a foreign key uses, so
+     * these are created before the drop (and, in down, dropped after the original is restored).
+     *
+     * @return list<Index>
+     */
+    private function replacementIndexes(
+        TableDiff $tableDiff,
+    ): array {
+        $addedColumnNames = array_map(static fn (Column $column): string => $column->name, $tableDiff->columnsToAdd);
+
+        return array_values(array_filter(
+            $tableDiff->indexesToAdd,
+            static fn (Index $index): bool => array_any(
+                $tableDiff->indexesToDrop,
+                static fn (Index $dropped): bool => $dropped->columns === $index->columns,
+            ) && array_intersect($index->columns, $addedColumnNames) === [],
+        ));
     }
 
     /**
