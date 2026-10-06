@@ -11,11 +11,14 @@ use Marko\Database\Connection\StatementInterface;
 use Marko\Database\Connection\TransactionBackoff;
 use Marko\Database\Connection\TransactionInterface;
 use Marko\Database\Exceptions\TransactionException;
+use Marko\Database\Introspection\IntrospectorInterface;
 use Marko\Database\MySql\Connection\MySqlConnection;
+use Marko\Database\MySql\Connection\MySqlServer;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\AccountRepository;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\AuditEntryRepository;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\SharedConnectionContainer;
 use Marko\Database\Query\QueryBuilderFactoryInterface;
+use Marko\Database\Query\QueryBuilderInterface;
 use Marko\Database\Seed\SeederRunner;
 use Marko\Testing\Fake\FakeSleeper;
 use ReflectionProperty;
@@ -151,5 +154,28 @@ describe('MySQL shared connection wiring', function (): void {
 
         expect($transaction)->toBeInstanceOf(TransactionInterface::class)
             ->and($transaction)->toBe($container->get(ConnectionInterface::class));
+    });
+
+    it('shares one MySqlServer bound to the shared connection', function (): void {
+        $container = SharedConnectionContainer::build(SharedConnectionContainer::config());
+
+        $server = $container->get(MySqlServer::class);
+        $serverConnection = new ReflectionProperty($server, 'connection')->getValue($server);
+
+        expect($container->get(MySqlServer::class))->toBe($server)
+            ->and($serverConnection)->toBe($container->get(ConnectionInterface::class));
+    });
+
+    it('gives query builders and the introspector the shared MySqlServer', function (): void {
+        $container = SharedConnectionContainer::build(SharedConnectionContainer::config());
+        $server = $container->get(MySqlServer::class);
+
+        $fromFactory = $container->get(QueryBuilderFactoryInterface::class)->create();
+        $fromContainer = $container->get(QueryBuilderInterface::class);
+        $introspector = $container->get(IntrospectorInterface::class);
+
+        expect(new ReflectionProperty($fromFactory, 'server')->getValue($fromFactory))->toBe($server)
+            ->and(new ReflectionProperty($fromContainer, 'server')->getValue($fromContainer))->toBe($server)
+            ->and(new ReflectionProperty($introspector, 'server')->getValue($introspector))->toBe($server);
     });
 });

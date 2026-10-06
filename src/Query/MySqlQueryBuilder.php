@@ -8,8 +8,11 @@ use Marko\Database\Connection\ConnectionInterface;
 use Marko\Database\Connection\TransactionInterface;
 use Marko\Database\Exceptions\InvalidColumnException;
 use Marko\Database\Exceptions\LockException;
+use Marko\Database\Exceptions\QueryException;
 use Marko\Database\Exceptions\UnionShapeMismatchException;
 use Marko\Database\Exceptions\UpsertException;
+use Marko\Database\MySql\Connection\MySqlServer;
+use Marko\Database\MySql\Exceptions\ServerVersionException;
 use Marko\Database\MySql\Sql\MySqlIdentifier;
 use Marko\Database\Query\IdentifierValidator;
 use Marko\Database\Query\JsonPathParser;
@@ -115,9 +118,17 @@ class MySqlQueryBuilder implements QueryBuilderInterface
      */
     private array $bindings = [];
 
+    private readonly MySqlServer $server;
+
+    /**
+     * @param MySqlServer|null $server The shared server check; built from $connection when omitted
+     */
     public function __construct(
         private readonly ConnectionInterface $connection,
-    ) {}
+        ?MySqlServer $server = null,
+    ) {
+        $this->server = $server ?? new MySqlServer($connection);
+    }
 
     /**
      * @throws InvalidColumnException
@@ -1199,11 +1210,13 @@ class MySqlQueryBuilder implements QueryBuilderInterface
     /**
      * Compile the row-lock clause, appended after LIMIT/OFFSET.
      *
-     * A shared lock compiles to LOCK IN SHARE MODE (MySQL and MariaDB), or to
-     * FOR SHARE when a modifier is set, because LOCK IN SHARE MODE accepts no
-     * SKIP LOCKED / NOWAIT (FOR SHARE needs MySQL 8.0+).
+     * A shared lock compiles to LOCK IN SHARE MODE on both servers. With a
+     * SKIP LOCKED / NOWAIT modifier the servers disagree: MySQL accepts the
+     * modifier only after FOR SHARE (8.0+), MariaDB only after LOCK IN SHARE
+     * MODE (NOWAIT 10.3+, SKIP LOCKED 10.6+). Only that case asks MySqlServer
+     * which server this is, so other queries never read the server version.
      *
-     * @throws LockException
+     * @throws LockException|QueryException|ServerVersionException
      */
     private function buildLockClause(): string
     {
@@ -1219,7 +1232,11 @@ class MySqlQueryBuilder implements QueryBuilderInterface
             return ' FOR UPDATE' . $modifier;
         }
 
-        return $modifier === '' ? ' LOCK IN SHARE MODE' : ' FOR SHARE' . $modifier;
+        if ($modifier === '') {
+            return ' LOCK IN SHARE MODE';
+        }
+
+        return ($this->server->isMariaDb() ? ' LOCK IN SHARE MODE' : ' FOR SHARE') . $modifier;
     }
 
     /**

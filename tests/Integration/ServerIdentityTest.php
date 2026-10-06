@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\Database\MySql\Tests\Integration;
 
 use Marko\Database\MySql\Connection\MySqlConnection;
+use Marko\Database\MySql\Connection\MySqlServer;
 use Marko\Database\MySql\Tests\Fixtures\IntegrationDatabase;
 use RuntimeException;
 
@@ -34,4 +35,22 @@ it('connects to the server MARKO_TEST_MYSQL_SERVER names', function (): void {
 
     expect($version)->not->toBe('')
         ->and(fn () => IntegrationDatabase::assertServer($version))->not->toThrow(RuntimeException::class);
+});
+
+it('detects the same server with MySqlServer that the server reports', function (): void {
+    $config = IntegrationDatabase::config();
+
+    if ($config === null) {
+        $this->markTestSkipped(IntegrationDatabase::SKIP_REASON);
+    }
+
+    $connection = new MySqlConnection($config);
+    $reported = IntegrationDatabase::serverVersion($connection);
+    $server = new MySqlServer($connection);
+
+    expect($server->isMariaDb())->toBe(IntegrationDatabase::isMariaDb($connection))
+        ->and($server->version()->reported)->toBe($reported)
+        ->and($reported)->toContain($server->version()->version);
+
+    $connection->disconnect();
 });

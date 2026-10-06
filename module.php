@@ -12,6 +12,7 @@ use Marko\Database\Exceptions\TransactionException;
 use Marko\Database\Introspection\IntrospectorInterface;
 use Marko\Database\MySql\Connection\MySqlConnection;
 use Marko\Database\MySql\Connection\MySqlConnectionFactory;
+use Marko\Database\MySql\Connection\MySqlServer;
 use Marko\Database\MySql\Introspection\MySqlIntrospector;
 use Marko\Database\MySql\Query\MySqlQueryBuilder;
 use Marko\Database\MySql\Query\MySqlQueryBuilderFactory;
@@ -32,6 +33,7 @@ return [
             return new MySqlIntrospector(
                 $container->get(ConnectionInterface::class),
                 $config->database,
+                $container->get(MySqlServer::class),
             );
         },
         SqlGeneratorInterface::class => MySqlGenerator::class,
@@ -49,8 +51,10 @@ return [
             return $connection;
         },
     ],
-    // One connection (one PDO handle) per container, shared by every consumer.
+    // One connection (one PDO handle) per container, shared by every consumer,
+    // and one server check (MySQL or MariaDB, read once) for that connection.
     'singletons' => [
         ConnectionInterface::class,
+        MySqlServer::class,
     ],
 ];

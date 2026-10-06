@@ -69,7 +69,7 @@ beforeEach(function (): void {
         . "price DECIMAL(12,4) UNSIGNED NOT NULL DEFAULT '0.0000', "
         . 'author_id INT UNSIGNED NOT NULL, '
         . 'updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
-        . ') DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci',
+        . ') DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
     );
     $this->original = mysqlShowCreateTable($this->connection);
 

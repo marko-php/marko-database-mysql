@@ -7,7 +7,9 @@ namespace Marko\Database\MySql\Tests\Introspection;
 use Marko\Database\Connection\ConnectionInterface;
 use Marko\Database\Connection\StatementInterface;
 use Marko\Database\Introspection\IntrospectorInterface;
+use Marko\Database\MySql\Connection\MySqlServer;
 use Marko\Database\MySql\Introspection\MySqlIntrospector;
+use Marko\Database\MySql\Tests\Query\RecordingTransactionalConnection;
 use Marko\Database\Schema\Column;
 use Marko\Database\Schema\Expression;
 use Marko\Database\Schema\ForeignKey;
@@ -183,11 +185,15 @@ function mariaDbLongtextConnection(
 /**
  * Creates a mock connection that returns predefined query results.
  *
+ * The server reports MySQL 8.4.3 unless $queryResults has its own 'VERSION()' entry.
+ *
  * @param array<string, array<int, array<string, mixed>>> $queryResults Map of SQL patterns to results
  */
 function createMockConnection(
     array $queryResults = [],
 ): ConnectionInterface {
+    $queryResults += ['VERSION()' => [['version' => '8.4.3']]];
+
     return new readonly class ($queryResults) implements ConnectionInterface
     {
         /**
@@ -731,6 +737,10 @@ describe('MySqlIntrospector', function (): void {
                 string $sql,
                 array $bindings = [],
             ): array {
+                if (str_contains($sql, 'VERSION()')) {
+                    return [['version' => '8.4.3']];
+                }
+
                 if (str_contains($sql, 'information_schema.columns')) {
                     $this->columnsSql = $sql;
                 }
@@ -1073,6 +1083,10 @@ describe('MySqlIntrospector', function (): void {
                 string $sql,
                 array $bindings = [],
             ): array {
+                if (str_contains($sql, 'VERSION()')) {
+                    return [['version' => '8.4.3']];
+                }
+
                 // Match the tables query by its FROM clause: the columns query joins information_schema.tables
                 if (str_contains($sql, 'FROM information_schema.tables')) {
                     $this->callOrder[] = 'tables';
@@ -1290,5 +1304,28 @@ describe('MySqlIntrospector', function (): void {
         $foreignKeys = $introspector->getForeignKeys('standalone_table');
 
         expect($foreignKeys)->toBe([]);
+    });
+});
+
+describe('MySqlIntrospector server detection', function (): void {
+    it('reads the server version once across several getColumns calls', function (): void {
+        $connection = new RecordingTransactionalConnection(serverVersion: '11.8.7-MariaDB');
+        $introspector = new MySqlIntrospector($connection, 'testdb');
+
+        $introspector->getColumns('users');
+        $introspector->getColumns('posts');
+        $introspector->getColumns('comments');
+
+        expect($connection->versionQueries)->toBe(1);
+    });
+
+    it('uses the MySqlServer it is given', function (): void {
+        $connection = new RecordingTransactionalConnection();
+        $server = new MySqlServer(new RecordingTransactionalConnection(serverVersion: '11.8.7-MariaDB'));
+
+        new MySqlIntrospector($connection, 'testdb', $server)->getColumns('users');
+
+        expect($connection->versionQueries)->toBe(0)
+            ->and($server->isMariaDb())->toBeTrue();
     });
 });

@@ -10,6 +10,8 @@ use Marko\Database\Exceptions\MigrationException;
 use Marko\Database\Exceptions\QueryException;
 use Marko\Database\Introspection\ExpressionDefaultMatcherInterface;
 use Marko\Database\Introspection\IntrospectorInterface;
+use Marko\Database\MySql\Connection\MySqlServer;
+use Marko\Database\MySql\Exceptions\ServerVersionException;
 use Marko\Database\MySql\Sql\MySqlIdentifier;
 use Marko\Database\Schema\Column;
 use Marko\Database\Schema\Expression;
@@ -82,10 +84,18 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
 
     private const array FLOAT_TYPES = ['decimal', 'float', 'double'];
 
+    private MySqlServer $server;
+
+    /**
+     * @param MySqlServer|null $server The shared server check; built from $connection when omitted
+     */
     public function __construct(
         private ConnectionInterface $connection,
         private string $database,
-    ) {}
+        ?MySqlServer $server = null,
+    ) {
+        $this->server = $server ?? new MySqlServer($connection);
+    }
 
     /**
      * @return array<string>
@@ -137,6 +147,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
      * @param array<string> $primaryKeyColumns
      * @param array<string> $uniqueColumns
      * @return array<Column>
+     * @throws ServerVersionException When the server reports no readable version
      */
     public function getColumns(
         string $table,
@@ -165,7 +176,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
         SQL;
 
         $rows = $this->connection->query($sql, [$this->database, $table]);
-        $mariaDb = $this->isMariaDb();
+        $mariaDb = $this->server->isMariaDb();
         $hasLongtext = in_array('longtext', array_map(strtolower(...), array_column($rows, 'DATA_TYPE')), true);
         $jsonColumns = $mariaDb && $hasLongtext ? $this->getMariaDbJsonColumns($table) : [];
         $columns = [];
@@ -219,7 +230,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
      * column's default is unescaped (MySQL only; MariaDB does not escape it) and both sides are compared without
      * wrapping parentheses.
      *
-     * @throws ExpressionDefaultProbeException When the server rejects the expression, or the user may not create a temporary table
+     * @throws ExpressionDefaultProbeException|ServerVersionException
      */
     public function matchesStoredDefault(
         string $table,
@@ -241,7 +252,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
         }
 
         $stored = (string) $row['COLUMN_DEFAULT'];
-        $stored = $this->isMariaDb() ? $stored : strtr($stored, ['\\\\' => '\\', "\\'" => "'"]);
+        $stored = $this->server->isMariaDb() ? $stored : strtr($stored, ['\\\\' => '\\', "\\'" => "'"]);
         $probe = $this->probeDefault($table, $column, (string) $row['COLUMN_TYPE'], $expression);
 
         return $probe !== null && Expression::unwrap($probe) === Expression::unwrap($stored);
@@ -406,16 +417,6 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
         $dataType = strtolower($dataType);
 
         return self::COLUMN_TYPE_MAP[$columnType] ?? self::TYPE_MAP[$dataType] ?? $dataType;
-    }
-
-    /**
-     * Whether the server is MariaDB, which reports column defaults differently from MySQL.
-     */
-    private function isMariaDb(): bool
-    {
-        $rows = $this->connection->query('SELECT VERSION() AS version');
-
-        return str_contains(strtolower((string) ($rows[0]['version'] ?? '')), 'mariadb');
     }
 
     /**

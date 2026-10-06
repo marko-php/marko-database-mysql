@@ -12,8 +12,9 @@ use RuntimeException;
 
 /**
  * Records the SQL a query builder sends and reports a configurable
- * transaction state, so row-lock and upsert compilation can be asserted
- * without a MySQL server.
+ * transaction state and server version, so row-lock and upsert compilation
+ * can be asserted without a MySQL server. SELECT VERSION() is answered
+ * with $serverVersion and counted, never recorded as the last query.
  */
 class RecordingTransactionalConnection implements ConnectionInterface, TransactionInterface
 {
@@ -24,12 +25,16 @@ class RecordingTransactionalConnection implements ConnectionInterface, Transacti
 
     public string $lastExecuteSql = '';
 
+    /** How many times SELECT VERSION() was queried. */
+    public int $versionQueries = 0;
+
     /** @var array<mixed> */
     public array $lastExecuteBindings = [];
 
     public function __construct(
         public bool $open = true,
         private readonly int $executeReturn = 0,
+        private readonly string $serverVersion = '8.4.3',
     ) {}
 
     public function connect(): void {}
@@ -45,6 +50,12 @@ class RecordingTransactionalConnection implements ConnectionInterface, Transacti
         string $sql,
         array $bindings = [],
     ): array {
+        if ($sql === 'SELECT VERSION() AS version') {
+            $this->versionQueries++;
+
+            return [['version' => $this->serverVersion]];
+        }
+
         $this->lastQuerySql = $sql;
         $this->lastQueryBindings = $bindings;
 

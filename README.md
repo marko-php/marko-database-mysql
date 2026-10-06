@@ -43,7 +43,7 @@ For multiple connections (for example, read replicas), use [`marko/database-read
 
 ## Driver Notes
 
-This driver supports **MySQL** 8.0+ and **MariaDB** 10.6+. Both are fully supported via the same driver key (`mysql`).
+This driver supports **MySQL** 8.0+ and **MariaDB** 10.11+. Both are fully supported via the same driver key (`mysql`).
 
 ## Quick Example
 

@@ -6,6 +6,7 @@ namespace Marko\Database\MySql\Tests\Query;
 
 use Marko\Database\Exceptions\LockException;
 use Marko\Database\Exceptions\UpsertException;
+use Marko\Database\MySql\Connection\MySqlServer;
 use Marko\Database\MySql\Query\MySqlQueryBuilder;
 
 describe('MySqlQueryBuilder row locks', function (): void {
@@ -61,6 +62,77 @@ describe('MySqlQueryBuilder row locks', function (): void {
 
         expect($skip->lastQuerySql)->toBe('SELECT * FROM `jobs` FOR UPDATE SKIP LOCKED')
             ->and($noWait->lastQuerySql)->toBe('SELECT * FROM `jobs` FOR SHARE NOWAIT');
+    });
+
+    it('compiles a shared lock with NOWAIT to LOCK IN SHARE MODE NOWAIT on MariaDB', function (): void {
+        $connection = new RecordingTransactionalConnection(serverVersion: '11.8.7-MariaDB-ubu2404');
+
+        (new MySqlQueryBuilder($connection))->table('jobs')->sharedLock()->noWait()->get();
+
+        expect($connection->lastQuerySql)->toBe('SELECT * FROM `jobs` LOCK IN SHARE MODE NOWAIT');
+    });
+
+    it('compiles a shared lock with SKIP LOCKED to LOCK IN SHARE MODE SKIP LOCKED on MariaDB', function (): void {
+        $connection = new RecordingTransactionalConnection(serverVersion: '5.5.5-10.11.8-MariaDB');
+
+        (new MySqlQueryBuilder($connection))->table('jobs')->sharedLock()->skipLocked()->get();
+
+        expect($connection->lastQuerySql)->toBe('SELECT * FROM `jobs` LOCK IN SHARE MODE SKIP LOCKED');
+    });
+
+    it('keeps FOR SHARE with a modifier on MySQL', function (): void {
+        $skip = new RecordingTransactionalConnection(serverVersion: '8.0.36');
+        $noWait = new RecordingTransactionalConnection(serverVersion: '8.0.36');
+
+        (new MySqlQueryBuilder($skip))->table('jobs')->sharedLock()->skipLocked()->get();
+        (new MySqlQueryBuilder($noWait))->table('jobs')->sharedLock()->noWait()->get();
+
+        expect($skip->lastQuerySql)->toBe('SELECT * FROM `jobs` FOR SHARE SKIP LOCKED')
+            ->and($noWait->lastQuerySql)->toBe('SELECT * FROM `jobs` FOR SHARE NOWAIT');
+    });
+
+    it('keeps LOCK IN SHARE MODE and FOR UPDATE unchanged on MariaDB', function (): void {
+        $shared = new RecordingTransactionalConnection(serverVersion: '11.8.7-MariaDB');
+        $update = new RecordingTransactionalConnection(serverVersion: '11.8.7-MariaDB');
+        $updateSkip = new RecordingTransactionalConnection(serverVersion: '11.8.7-MariaDB');
+
+        (new MySqlQueryBuilder($shared))->table('jobs')->sharedLock()->get();
+        (new MySqlQueryBuilder($update))->table('jobs')->lockForUpdate()->noWait()->get();
+        (new MySqlQueryBuilder($updateSkip))->table('jobs')->lockForUpdate()->skipLocked()->get();
+
+        expect($shared->lastQuerySql)->toBe('SELECT * FROM `jobs` LOCK IN SHARE MODE')
+            ->and($update->lastQuerySql)->toBe('SELECT * FROM `jobs` FOR UPDATE NOWAIT')
+            ->and($updateSkip->lastQuerySql)->toBe('SELECT * FROM `jobs` FOR UPDATE SKIP LOCKED');
+    });
+
+    it('does not query the server version for queries without a shared lock modifier', function (): void {
+        $connection = new RecordingTransactionalConnection();
+
+        (new MySqlQueryBuilder($connection))->table('jobs')->get();
+        (new MySqlQueryBuilder($connection))->table('jobs')->sharedLock()->get();
+        (new MySqlQueryBuilder($connection))->table('jobs')->lockForUpdate()->skipLocked()->get();
+
+        expect($connection->versionQueries)->toBe(0);
+    });
+
+    it('uses the MySqlServer it is given', function (): void {
+        $connection = new RecordingTransactionalConnection();
+        $server = new MySqlServer(new RecordingTransactionalConnection(serverVersion: '11.8.7-MariaDB'));
+
+        (new MySqlQueryBuilder($connection, $server))->table('jobs')->sharedLock()->noWait()->get();
+
+        expect($connection->lastQuerySql)->toBe('SELECT * FROM `jobs` LOCK IN SHARE MODE NOWAIT')
+            ->and($connection->versionQueries)->toBe(0);
+    });
+
+    it('detects the server from its own connection when no MySqlServer is given', function (): void {
+        $connection = new RecordingTransactionalConnection(serverVersion: '11.8.7-MariaDB');
+        $builder = new MySqlQueryBuilder($connection);
+
+        $builder->table('jobs')->sharedLock()->noWait()->get();
+        $builder->get();
+
+        expect($connection->versionQueries)->toBe(1);
     });
 
     it('throws when a lock is used outside a transaction', function (): void {
