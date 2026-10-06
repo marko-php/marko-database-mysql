@@ -1193,3 +1193,158 @@ describe('MySqlGenerator identifier quoting', function (): void {
         }
     });
 });
+
+describe('MySqlGenerator primary key columns on existing tables', function (): void {
+    beforeEach(function (): void {
+        $this->generator = new MySqlGenerator();
+        $this->up = fn (TableDiff $tableDiff): array => $this->generator->generateUp(
+            new SchemaDiff(tablesToAlter: [$tableDiff->tableName => $tableDiff]),
+        );
+        $this->down = fn (TableDiff $tableDiff): array => $this->generator->generateDown(
+            new SchemaDiff(tablesToAlter: [$tableDiff->tableName => $tableDiff]),
+        );
+        $this->serialId = new Column(name: 'id', type: 'int', primaryKey: true, autoIncrement: true);
+    });
+
+    it('adds an auto-increment primary key column and its key in one statement', function (): void {
+        $statements = ($this->up)(new TableDiff(tableName: 'admin_user_roles', columnsToAdd: [$this->serialId]));
+
+        expect($statements)->toBe([
+            'ALTER TABLE `admin_user_roles` ADD COLUMN `id` INT NOT NULL AUTO_INCREMENT, ADD PRIMARY KEY (`id`)',
+        ]);
+    });
+
+    it('adds the key with a primary key column passed to generateAddColumn', function (): void {
+        expect($this->generator->generateAddColumn('admin_user_roles', $this->serialId))
+            ->toBe(
+                'ALTER TABLE `admin_user_roles` ADD COLUMN `id` INT NOT NULL AUTO_INCREMENT, ADD PRIMARY KEY (`id`)',
+            );
+    });
+
+    it('adds every column of a composite primary key and the key in one statement', function (): void {
+        $statements = ($this->up)(new TableDiff(tableName: 'post_tags', columnsToAdd: [
+            new Column(name: 'post_id', type: 'int', primaryKey: true),
+            new Column(name: 'tag_id', type: 'int', primaryKey: true),
+        ]));
+
+        expect($statements)->toBe([
+            'ALTER TABLE `post_tags` ADD COLUMN `post_id` INT NOT NULL, ADD COLUMN `tag_id` INT NOT NULL, '
+            . 'ADD PRIMARY KEY (`post_id`, `tag_id`)',
+        ]);
+    });
+
+    it('adds a non-auto-increment primary key column and its key in one statement', function (): void {
+        $statements = ($this->up)(new TableDiff(tableName: 'tokens', columnsToAdd: [
+            new Column(name: 'id', type: 'uuid', default: new Expression('UUID()'), primaryKey: true),
+        ]));
+
+        expect($statements)->toBe([
+            'ALTER TABLE `tokens` ADD COLUMN `id` CHAR(36) NOT NULL DEFAULT (UUID()), ADD PRIMARY KEY (`id`)',
+        ]);
+    });
+
+    it('keeps added columns that are not part of the key in their own statements', function (): void {
+        $statements = ($this->up)(new TableDiff(tableName: 'posts', columnsToAdd: [
+            new Column(name: 'title', type: 'string', length: 100),
+            $this->serialId,
+            new Column(name: 'body', type: 'text', nullable: true),
+        ]));
+
+        expect($statements)->toBe([
+            'ALTER TABLE `posts` ADD COLUMN `title` VARCHAR(100) NOT NULL',
+            'ALTER TABLE `posts` ADD COLUMN `id` INT NOT NULL AUTO_INCREMENT, ADD PRIMARY KEY (`id`)',
+            'ALTER TABLE `posts` ADD COLUMN `body` TEXT NULL',
+        ]);
+    });
+
+    it('throws when a primary key column is added to a table that already has a primary key', function (): void {
+        $tableDiff = new TableDiff(
+            tableName: 'post_tags',
+            columnsToAdd: [$this->serialId],
+            currentPrimaryKey: ['post_id', 'tag_id'],
+        );
+
+        expect(fn () => ($this->up)($tableDiff))->toThrow(
+            MigrationException::class,
+            "Cannot add primary key column 'id' to table 'post_tags', which already has a primary key on "
+            . "'post_id', 'tag_id'",
+        );
+    });
+
+    it('adds a column that is not a key to a table that has a primary key', function (): void {
+        $statements = ($this->up)(new TableDiff(
+            tableName: 'posts',
+            columnsToAdd: [new Column(name: 'body', type: 'text', nullable: true)],
+            currentPrimaryKey: ['id'],
+        ));
+
+        expect($statements)->toBe(['ALTER TABLE `posts` ADD COLUMN `body` TEXT NULL']);
+    });
+
+    it('throws when a modified column only changes its primary key', function (): void {
+        $tableDiff = new TableDiff(
+            tableName: 'tokens',
+            columnsToModify: ['id' => new Column(name: 'id', type: 'uuid', primaryKey: true)],
+            columnsToModifyFrom: ['id' => new Column(name: 'id', type: 'uuid')],
+        );
+
+        expect(fn () => ($this->up)($tableDiff))->toThrow(
+            MigrationException::class,
+            "Cannot change the primary key of column 'tokens.id' in place on MySQL",
+        );
+    });
+
+    it('throws when a modified column changes its primary key along with its type', function (): void {
+        $tableDiff = new TableDiff(
+            tableName: 'tokens',
+            columnsToModify: ['code' => new Column(name: 'code', type: 'string', length: 64, primaryKey: true)],
+            columnsToModifyFrom: ['code' => new Column(name: 'code', type: 'string', length: 32)],
+        );
+
+        expect(fn () => ($this->up)($tableDiff))->toThrow(
+            MigrationException::class,
+            "Cannot change the primary key of column 'tokens.code' in place on MySQL",
+        );
+    });
+
+    it('throws when a primary key column is added while the current key columns are dropped', function (): void {
+        $tableDiff = new TableDiff(
+            tableName: 'tokens',
+            columnsToAdd: [$this->serialId],
+            columnsToDrop: [new Column(name: 'code', type: 'string', primaryKey: true)],
+            currentPrimaryKey: ['code'],
+        );
+
+        expect(fn () => ($this->up)($tableDiff))->toThrow(
+            MigrationException::class,
+            "Cannot add primary key column 'id' to table 'tokens', which already has a primary key on 'code'",
+        );
+    });
+
+    it('throws when a diff drops part of a composite primary key', function (): void {
+        $tableDiff = new TableDiff(
+            tableName: 'post_tags',
+            columnsToDrop: [new Column(name: 'tag_id', type: 'int', primaryKey: true)],
+            currentPrimaryKey: ['post_id', 'tag_id'],
+        );
+
+        expect(fn () => ($this->up)($tableDiff))->toThrow(
+            MigrationException::class,
+            "Cannot change the primary key of column 'post_tags.tag_id' in place on MySQL",
+        );
+    });
+
+    it('drops an added primary key column in down', function (): void {
+        $statements = ($this->down)(new TableDiff(tableName: 'admin_user_roles', columnsToAdd: [$this->serialId]));
+
+        expect($statements)->toBe(['ALTER TABLE `admin_user_roles` DROP COLUMN `id`']);
+    });
+
+    it('restores a dropped primary key column with its key in down', function (): void {
+        $statements = ($this->down)(new TableDiff(tableName: 'admin_user_roles', columnsToDrop: [$this->serialId]));
+
+        expect($statements)->toBe([
+            'ALTER TABLE `admin_user_roles` ADD COLUMN `id` INT NOT NULL AUTO_INCREMENT, ADD PRIMARY KEY (`id`)',
+        ]);
+    });
+});

@@ -196,10 +196,17 @@ class MySqlGenerator implements SqlGeneratorInterface
         return sprintf('DROP TABLE %s', $this->quote($tableName));
     }
 
+    /**
+     * A primary key column is added together with its key (see generateAddKeyColumns()).
+     */
     public function generateAddColumn(
         string $table,
         Column $column,
     ): string {
+        if ($column->primaryKey) {
+            return $this->generateAddKeyColumns($table, [$column]);
+        }
+
         return sprintf(
             'ALTER TABLE %s ADD COLUMN %s',
             $this->quote($table),
@@ -657,6 +664,8 @@ class MySqlGenerator implements SqlGeneratorInterface
     private function generateTableAlterations(
         TableDiff $tableDiff,
     ): array {
+        $tableDiff->assertSupportedPrimaryKeyChange('MySQL');
+
         $statements = [];
 
         // Drop foreign keys first (to allow column drops)
@@ -681,10 +690,8 @@ class MySqlGenerator implements SqlGeneratorInterface
             $statements[] = $this->generateDropColumn($tableDiff->tableName, $column->name);
         }
 
-        // Add columns
-        foreach ($tableDiff->columnsToAdd as $column) {
-            $statements[] = $this->generateAddColumn($tableDiff->tableName, $column);
-        }
+        // Add columns, primary key columns together with their key
+        $statements = [...$statements, ...$this->addColumnStatements($tableDiff->tableName, $tableDiff->columnsToAdd)];
 
         // Modify columns
         $statements = [...$statements, ...$this->generateColumnModifications($tableDiff, reverse: false)];
@@ -733,10 +740,11 @@ class MySqlGenerator implements SqlGeneratorInterface
             $statements[] = $this->generateDropColumn($tableDiff->tableName, $column->name);
         }
 
-        // Reverse: add columns that were dropped
-        foreach ($tableDiff->columnsToDrop as $column) {
-            $statements[] = $this->generateAddColumn($tableDiff->tableName, $column);
-        }
+        // Reverse: add columns that were dropped, primary key columns together with their key
+        $statements = [...$statements, ...$this->addColumnStatements(
+            $tableDiff->tableName,
+            $tableDiff->columnsToDrop,
+        )];
 
         // Reverse: restore modified columns to their previous definition
         $statements = [...$statements, ...$this->generateColumnModifications($tableDiff, reverse: true)];
@@ -756,6 +764,51 @@ class MySqlGenerator implements SqlGeneratorInterface
         }
 
         return $statements;
+    }
+
+    /**
+     * ADD COLUMN statements for $columns. The primary key columns and their ADD PRIMARY KEY share one ALTER
+     * TABLE, at the position of the first of them: MySQL refuses an AUTO_INCREMENT column that is not a key
+     * (error 1075), and one statement never leaves a key column behind without its key.
+     *
+     * @param array<Column> $columns
+     * @return list<string>
+     */
+    private function addColumnStatements(
+        string $table,
+        array $columns,
+    ): array {
+        $statements = [];
+        $keyColumns = array_values(array_filter($columns, static fn (Column $column): bool => $column->primaryKey));
+
+        foreach ($columns as $column) {
+            if (!$column->primaryKey) {
+                $statements[] = $this->generateAddColumn($table, $column);
+            } elseif ($column === $keyColumns[0]) {
+                $statements[] = $this->generateAddKeyColumns($table, $keyColumns);
+            }
+        }
+
+        return $statements;
+    }
+
+    /**
+     * One ALTER TABLE adding the primary key columns and the key over them.
+     *
+     * @param non-empty-list<Column> $keyColumns
+     */
+    private function generateAddKeyColumns(
+        string $table,
+        array $keyColumns,
+    ): string {
+        $additions = array_map(
+            fn (Column $column): string => 'ADD COLUMN ' . $this->buildColumnDefinition($column),
+            $keyColumns,
+        );
+        $keyNames = array_map(fn (Column $column): string => $this->quote($column->name), $keyColumns);
+        $additions[] = 'ADD PRIMARY KEY (' . implode(', ', $keyNames) . ')';
+
+        return sprintf('ALTER TABLE %s %s', $this->quote($table), implode(', ', $additions));
     }
 
     /**
@@ -787,7 +840,8 @@ class MySqlGenerator implements SqlGeneratorInterface
      * target renders the same as its previous definition gets no statement in either direction.
      *
      * @return list<string>
-     * @throws MigrationException When the diff holds no previous definition for a modified column
+     * @throws MigrationException When the diff holds no previous definition for a modified column, or a
+     *                            modified column's primary key changes
      */
     private function generateColumnModifications(
         TableDiff $tableDiff,
@@ -798,6 +852,16 @@ class MySqlGenerator implements SqlGeneratorInterface
         foreach ($tableDiff->columnsToModify as $columnName => $column) {
             $previous = $tableDiff->previousColumn($columnName);
             $target = $this->targetColumn($column, $previous);
+
+            // MODIFY COLUMN cannot add or remove a primary key, so the change would never apply
+            if ($target->primaryKey !== $previous->primaryKey) {
+                throw MigrationException::columnChangeNotSupported(
+                    $tableDiff->tableName,
+                    $target->name,
+                    'MySQL',
+                    'primary key',
+                );
+            }
 
             if ($this->buildColumnDefinition($target, inlineUnique: false)
                 === $this->buildColumnDefinition($previous, inlineUnique: false)) {

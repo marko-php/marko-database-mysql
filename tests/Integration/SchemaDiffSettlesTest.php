@@ -11,6 +11,8 @@ use Marko\Database\Diff\SchemaDiff;
 use Marko\Database\Entity\Entity;
 use Marko\Database\Entity\EntityMetadataFactory;
 use Marko\Database\Entity\SchemaBuilder;
+use Marko\Database\Exceptions\MigrationException;
+use Marko\Database\Exceptions\QueryException;
 use Marko\Database\Exceptions\UniqueConstraintViolationException;
 use Marko\Database\MySql\Connection\MySqlConnection;
 use Marko\Database\MySql\Introspection\MySqlIntrospector;
@@ -56,6 +58,7 @@ beforeEach(function (): void {
             'settle_tokens',
             'settle_documents',
             'settle_users',
+            'settle_pivots',
         ];
 
         foreach ($tables as $table) {
@@ -334,4 +337,167 @@ describe('MySQL schema diffs that settle', function (): void {
                 ->toContain(IdentifierName::derive($this->longBody, suffix: '_index'));
         },
     );
+});
+
+describe('MySQL primary key columns added to existing tables', function (): void {
+    beforeEach(function (): void {
+        // A key-less pivot with rows, as tables created by hand before an entity owned them can be
+        $this->connection->execute('CREATE TABLE settle_pivots (user_id INT NOT NULL, role_id INT NOT NULL)');
+        $this->connection->execute('INSERT INTO settle_pivots (user_id, role_id) VALUES (1, 10), (2, 20)');
+
+        $this->keyedPivots = mysqlSettleSchema(new #[Table('settle_pivots')] class () extends Entity
+        {
+            #[Column(primaryKey: true, autoIncrement: true)]
+            public int $id;
+
+            #[Column]
+            public int $userId;
+
+            #[Column]
+            public int $roleId;
+        });
+
+        $this->showCreate = fn (string $table): string => (string) array_values(
+            $this->connection->query("SHOW CREATE TABLE $table")[0],
+        )[1];
+    });
+
+    it('adds an auto-increment primary key column to a table with rows and the diff is then empty', function (): void {
+        $statements = $this->generator->generateUp(($this->diffAgainst)($this->keyedPivots));
+        ($this->run)($statements);
+        $id = array_find(
+            $this->introspector->getTable('settle_pivots')->columns,
+            fn ($column): bool => $column->name === 'id',
+        );
+
+        expect($statements)->toHaveCount(1)
+            ->and($statements[0])->toContain('ADD PRIMARY KEY (`id`)')
+            ->and(($this->diffAgainst)($this->keyedPivots)->isEmpty())->toBeTrue()
+            ->and($id->primaryKey)->toBeTrue()
+            ->and($id->autoIncrement)->toBeTrue()
+            ->and(array_column(
+                $this->connection->query('SELECT id, user_id FROM settle_pivots ORDER BY user_id'),
+                'id',
+            ))->toEqual([1, 2]);
+    });
+
+    it(
+        'adds a uuid primary key column with a UUID() default to a table with rows on MariaDB, and MySQL refuses it',
+        function (): void {
+            $this->connection->execute('CREATE TABLE settle_tokens (owner_id CHAR(36) NOT NULL)');
+            $this->connection->execute("INSERT INTO settle_tokens (owner_id) VALUES ('a'), ('b')");
+            $original = ($this->showCreate)('settle_tokens');
+            $keyedTokens = mysqlSettleSchema(new #[Table('settle_tokens')] class () extends Entity
+            {
+                #[Column(type: 'uuid', primaryKey: true, default: 'UUID()')]
+                public string $id;
+
+                #[Column(type: 'uuid')]
+                public string $ownerId;
+            });
+            $statements = $this->generator->generateUp(($this->diffAgainst)($keyedTokens));
+
+            if (!IntegrationDatabase::isMariaDb($this->connection)) {
+                // With binary logging on (the MySQL 8 default), MySQL refuses any ADD COLUMN whose default is
+                // non-deterministic (error 1674), key or not. One statement leaves the table as it was.
+                expect(fn () => ($this->run)($statements))->toThrow(QueryException::class, '1674')
+                    ->and(($this->showCreate)('settle_tokens'))->toBe($original);
+
+                return;
+            }
+
+            ($this->run)($statements);
+            $ids = array_column($this->connection->query('SELECT id FROM settle_tokens'), 'id');
+            $id = array_find(
+                $this->introspector->getTable('settle_tokens')->columns,
+                fn ($column): bool => $column->name === 'id',
+            );
+
+            // MariaDB evaluates the default once per existing row, so the rows get distinct keys
+            expect(($this->diffAgainst)($keyedTokens)->isEmpty())->toBeTrue()
+                ->and($id->primaryKey)->toBeTrue()
+                ->and(array_unique($ids))->toHaveCount(2);
+        },
+    );
+
+    it(
+        'adds a non-auto-increment primary key column without a default to an empty table and the diff is then empty',
+        function (): void {
+            $this->connection->execute('CREATE TABLE settle_tokens (owner_id CHAR(36) NOT NULL)');
+            $keyedTokens = mysqlSettleSchema(new #[Table('settle_tokens')] class () extends Entity
+            {
+                #[Column(type: 'uuid', primaryKey: true)]
+                public string $id;
+
+                #[Column(type: 'uuid')]
+                public string $ownerId;
+            });
+
+            ($this->run)($this->generator->generateUp(($this->diffAgainst)($keyedTokens)));
+            $id = array_find(
+                $this->introspector->getTable('settle_tokens')->columns,
+                fn ($column): bool => $column->name === 'id',
+            );
+
+            expect(($this->diffAgainst)($keyedTokens)->isEmpty())->toBeTrue()
+                ->and($id->primaryKey)->toBeTrue();
+        },
+    );
+
+    it(
+        'fails loudly adding a primary key column without a default to a table with rows and leaves the table '
+        . 'unchanged',
+        function (): void {
+            $original = ($this->showCreate)('settle_pivots');
+            $codedPivots = mysqlSettleSchema(new #[Table('settle_pivots')] class () extends Entity
+            {
+                #[Column(length: 20, primaryKey: true)]
+                public string $code;
+
+                #[Column]
+                public int $userId;
+
+                #[Column]
+                public int $roleId;
+            });
+            $statements = $this->generator->generateUp(($this->diffAgainst)($codedPivots));
+
+            // Both existing rows get the implicit default '', a duplicate key
+            expect(fn () => ($this->run)($statements))->toThrow(UniqueConstraintViolationException::class)
+                ->and(($this->showCreate)('settle_pivots'))->toBe($original);
+        },
+    );
+
+    it('refuses to add a primary key column to a table that already has a primary key', function (): void {
+        ($this->create)($this->plainUsers);
+        $compositeUsers = mysqlSettleSchema(new #[Table('settle_users')] class () extends Entity
+        {
+            #[Column(primaryKey: true, autoIncrement: true)]
+            public int $id;
+
+            #[Column(length: 20, primaryKey: true)]
+            public string $tenant;
+
+            #[Column(length: 191)]
+            public string $email;
+        });
+
+        expect(fn () => $this->generator->generateUp(($this->diffAgainst)($compositeUsers)))->toThrow(
+            MigrationException::class,
+            "Cannot add primary key column 'tenant' to table 'settle_users', which already has a primary key on 'id'",
+        );
+    });
+
+    it('drops the added primary key column in down and the table matches the original', function (): void {
+        $original = ($this->showCreate)('settle_pivots');
+        $originalTable = $this->introspector->getTable('settle_pivots');
+        $addition = ($this->diffAgainst)($this->keyedPivots);
+        ($this->run)($this->generator->generateUp($addition));
+        ($this->run)($this->generator->generateDown($addition));
+
+        expect(($this->showCreate)('settle_pivots'))->toBe($original)
+            ->and($this->introspector->getTable('settle_pivots'))->toEqual($originalTable)
+            ->and($this->connection->query('SELECT user_id, role_id FROM settle_pivots ORDER BY user_id'))
+            ->toEqual([['user_id' => 1, 'role_id' => 10], ['user_id' => 2, 'role_id' => 20]]);
+    });
 });
