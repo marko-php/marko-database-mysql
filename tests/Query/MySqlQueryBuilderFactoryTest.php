@@ -34,7 +34,7 @@ describe('MySqlQueryBuilderFactory', function (): void {
     });
 
     it('creates MySqlQueryBuilder instances', function (): void {
-        $connection = $this->createMock(ConnectionInterface::class);
+        $connection = $this->createStub(ConnectionInterface::class);
         $factory = new MySqlQueryBuilderFactory($connection);
 
         $builder = $factory->create();
@@ -44,7 +44,7 @@ describe('MySqlQueryBuilderFactory', function (): void {
     });
 
     it('creates a new instance on each call', function (): void {
-        $connection = $this->createMock(ConnectionInterface::class);
+        $connection = $this->createStub(ConnectionInterface::class);
         $factory = new MySqlQueryBuilderFactory($connection);
 
         $builder1 = $factory->create();
