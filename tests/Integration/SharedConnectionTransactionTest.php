@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Marko\Database\MySql\Tests\Integration;
 
-use Marko\Database\Config\DatabaseConfig;
 use Marko\Database\Connection\TransactionInterface;
 use Marko\Database\MySql\Connection\MySqlConnection;
+use Marko\Database\MySql\Tests\Fixtures\IntegrationDatabase;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\Account;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\AccountRepository;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\AuditEntry;
@@ -14,41 +14,29 @@ use Marko\Database\MySql\Tests\Fixtures\SharedConnection\AuditEntryRepository;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\SharedConnectionContainer;
 use RuntimeException;
 
-/**
+/*
  * Runs against a real MySQL server. Set MARKO_TEST_MYSQL_HOST (and
  * optionally MARKO_TEST_MYSQL_PORT, _DATABASE, _USERNAME, _PASSWORD) to
  * enable; the tests skip otherwise. The tests create and drop the
  * shared_accounts and shared_audit_entries tables.
+ *
+ * Settings come from tests/Fixtures/IntegrationDatabase. With
+ * MARKO_INTEGRATION_REQUIRED set (CI), a missing host fails instead of
+ * skipping. Part of the integration-services group.
  */
-function mysqlIntegrationConfig(): ?DatabaseConfig
-{
-    $host = getenv('MARKO_TEST_MYSQL_HOST');
-
-    if ($host === false || $host === '') {
-        return null;
-    }
-
-    return SharedConnectionContainer::config(
-        host: $host,
-        port: (int) (getenv('MARKO_TEST_MYSQL_PORT') ?: 3306),
-        database: getenv('MARKO_TEST_MYSQL_DATABASE') ?: 'marko_test',
-        username: getenv('MARKO_TEST_MYSQL_USERNAME') ?: 'root',
-        password: getenv('MARKO_TEST_MYSQL_PASSWORD') ?: '',
-    );
-}
 
 function mysqlRowCount(MySqlConnection $connection, string $table): int
 {
     return (int) $connection->query("SELECT COUNT(*) AS total FROM $table")[0]['total'];
 }
 
-const MYSQL_SKIP_REASON = 'Set MARKO_TEST_MYSQL_HOST (and _PORT, _DATABASE, _USERNAME, _PASSWORD) to run against a real MySQL server';
+pest()->group('integration-services');
 
 beforeEach(function (): void {
-    $config = mysqlIntegrationConfig();
+    $config = IntegrationDatabase::config();
 
     if ($config === null) {
-        return;
+        $this->markTestSkipped(IntegrationDatabase::SKIP_REASON);
     }
 
     $this->observer = new MySqlConnection($config);
@@ -70,7 +58,7 @@ afterEach(function (): void {
 
 describe('MySQL transactions across repositories', function (): void {
     it('rolls back writes from two repositories when the transaction callback throws', function (): void {
-        $container = SharedConnectionContainer::build(mysqlIntegrationConfig());
+        $container = SharedConnectionContainer::build(IntegrationDatabase::config());
         $accounts = $container->get(AccountRepository::class);
         $auditEntries = $container->get(AuditEntryRepository::class);
 
@@ -91,10 +79,10 @@ describe('MySQL transactions across repositories', function (): void {
         expect($run)->toThrow(RuntimeException::class, 'Payment declined')
             ->and(mysqlRowCount($this->observer, 'shared_accounts'))->toBe(0)
             ->and(mysqlRowCount($this->observer, 'shared_audit_entries'))->toBe(0);
-    })->skip(fn (): bool => mysqlIntegrationConfig() === null, MYSQL_SKIP_REASON)->group('integration');
+    });
 
     it('commits writes from two repositories when the transaction callback succeeds', function (): void {
-        $container = SharedConnectionContainer::build(mysqlIntegrationConfig());
+        $container = SharedConnectionContainer::build(IntegrationDatabase::config());
         $accounts = $container->get(AccountRepository::class);
         $auditEntries = $container->get(AuditEntryRepository::class);
 
@@ -112,5 +100,5 @@ describe('MySQL transactions across repositories', function (): void {
 
         expect(mysqlRowCount($this->observer, 'shared_accounts'))->toBe(1)
             ->and(mysqlRowCount($this->observer, 'shared_audit_entries'))->toBe(1);
-    })->skip(fn (): bool => mysqlIntegrationConfig() === null, MYSQL_SKIP_REASON)->group('integration');
+    });
 });

@@ -4,35 +4,22 @@ declare(strict_types=1);
 
 namespace Marko\Database\MySql\Tests\Integration;
 
-use Marko\Database\Config\DatabaseConfig;
 use Marko\Database\Exceptions\DeadlockException;
 use Marko\Database\Exceptions\LockTimeoutException;
 use Marko\Database\MySql\Connection\MySqlConnection;
 use Marko\Database\MySql\Query\MySqlQueryBuilder;
-use Marko\Database\MySql\Tests\Fixtures\SharedConnection\SharedConnectionContainer;
+use Marko\Database\MySql\Tests\Fixtures\IntegrationDatabase;
 use RuntimeException;
 
-/**
+/*
  * Deadlocks and lock timeouts against a real MySQL server. Uses the
  * MARKO_TEST_MYSQL_* variables and skips when they are unset. Creates and
  * drops the concurrency_items table.
+ *
+ * Settings come from tests/Fixtures/IntegrationDatabase. With
+ * MARKO_INTEGRATION_REQUIRED set (CI), a missing host fails instead of
+ * skipping. Part of the integration-services group.
  */
-function mysqlConcurrencyConfig(): ?DatabaseConfig
-{
-    $host = getenv('MARKO_TEST_MYSQL_HOST');
-
-    if ($host === false || $host === '') {
-        return null;
-    }
-
-    return SharedConnectionContainer::config(
-        host: $host,
-        port: (int) (getenv('MARKO_TEST_MYSQL_PORT') ?: 3306),
-        database: getenv('MARKO_TEST_MYSQL_DATABASE') ?: 'marko_test',
-        username: getenv('MARKO_TEST_MYSQL_USERNAME') ?: 'root',
-        password: getenv('MARKO_TEST_MYSQL_PASSWORD') ?: '',
-    );
-}
 
 /**
  * A second session in its own process (one PHP process can only wait on one
@@ -106,14 +93,14 @@ function mysqlFinishContender(
     return $output;
 }
 
-pest()->group('integration');
+pest()->group('integration-services');
 
 beforeEach(function (): void {
-    $config = mysqlConcurrencyConfig();
+    $config = IntegrationDatabase::config();
 
     if ($config === null) {
         $this->markTestSkipped(
-            'Set MARKO_TEST_MYSQL_HOST (and _PORT, _DATABASE, _USERNAME, _PASSWORD) to run against a real MySQL server',
+            IntegrationDatabase::SKIP_REASON,
         );
     }
 
