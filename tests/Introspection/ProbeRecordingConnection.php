@@ -75,4 +75,9 @@ class ProbeRecordingConnection implements ConnectionInterface
     {
         return 'mysql';
     }
+
+    public function supportsReturning(): bool
+    {
+        return false;
+    }
 }
