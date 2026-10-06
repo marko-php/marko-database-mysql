@@ -107,6 +107,7 @@ afterEach(function (): void {
 
 describe('MySQL column modification migrations', function (): void {
     it('keeps the length, default and native definition when only nullability changes', function (): void {
+        $mariaDb = IntegrationDatabase::isMariaDb($this->connection);
         $diff = ($this->diffAgainst)($this->nullableEntity);
         ($this->run)($this->generator->generateUp($diff));
         $columns = $this->introspector->getTable('modify_column_products')->columns;
@@ -118,8 +119,10 @@ describe('MySQL column modification migrations', function (): void {
             ->and($columns[2]->collation)->toBe('utf8mb4_bin')
             ->and($columns[3]->nativeType)->toBe('decimal(12,4) unsigned')
             ->and($columns[3]->default)->toBe(0.0)
-            ->and($columns[4]->nativeType)->toBe('int unsigned')
-            ->and($columns[5]->default)->toEqual(new Expression('CURRENT_TIMESTAMP'))
+            // MariaDB keeps the integer display width MySQL 8.0.19+ drops, and reports no DEFAULT_GENERATED,
+            // so CURRENT_TIMESTAMP comes back as the plain string that reads as that expression
+            ->and($columns[4]->nativeType)->toBe($mariaDb ? 'int(10) unsigned' : 'int unsigned')
+            ->and($columns[5]->default)->toEqual($mariaDb ? 'CURRENT_TIMESTAMP' : new Expression('CURRENT_TIMESTAMP'))
             ->and($columns[5]->onUpdateExpression)->toBe('CURRENT_TIMESTAMP');
     });
 

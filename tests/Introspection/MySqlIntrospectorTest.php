@@ -79,6 +79,97 @@ function mysqlTypedColumns(
 }
 
 /**
+ * A `meta` longtext column (utf8mb4_bin, as MariaDB stores JSON) on a server reporting $version, with the given
+ * information_schema.CHECK_CONSTRAINTS rows on its table.
+ *
+ * @param list<array{CONSTRAINT_NAME: string, CHECK_CLAUSE: string}> $checks
+ * @return array<Column>
+ */
+function mariaDbLongtextColumns(
+    array $checks,
+): array {
+    return new MySqlIntrospector(mariaDbLongtextConnection($checks), 'testdb')->getColumns('items');
+}
+
+/**
+ * The connection behind mariaDbLongtextColumns(), counting the CHECK_CONSTRAINTS queries it answers.
+ *
+ * @param list<array{CONSTRAINT_NAME: string, CHECK_CLAUSE: string}> $checks
+ */
+function mariaDbLongtextConnection(
+    array $checks,
+    string $version = '11.8.7-MariaDB',
+    string $dataType = 'longtext',
+): ConnectionInterface {
+    $inner = createMockConnection([
+        'VERSION()' => [['version' => $version]],
+        'information_schema.CHECK_CONSTRAINTS' => $checks,
+        'information_schema.columns' => [[
+            'COLUMN_NAME' => 'meta',
+            'DATA_TYPE' => $dataType,
+            'CHARACTER_MAXIMUM_LENGTH' => '4294967295',
+            'IS_NULLABLE' => 'YES',
+            'COLUMN_DEFAULT' => 'NULL',
+            'EXTRA' => '',
+            'COLUMN_TYPE' => $dataType,
+            'COLLATION_NAME' => 'utf8mb4_bin',
+        ]],
+    ]);
+
+    return new class ($inner) implements ConnectionInterface
+    {
+        public int $checkQueries = 0;
+
+        public function __construct(
+            private readonly ConnectionInterface $inner,
+        ) {}
+
+        public function connect(): void {}
+
+        public function disconnect(): void {}
+
+        public function isConnected(): bool
+        {
+            return true;
+        }
+
+        public function query(
+            string $sql,
+            array $bindings = [],
+        ): array {
+            if (str_contains($sql, 'information_schema.CHECK_CONSTRAINTS')) {
+                $this->checkQueries++;
+            }
+
+            return $this->inner->query($sql, $bindings);
+        }
+
+        public function execute(
+            string $sql,
+            array $bindings = [],
+        ): int {
+            return 0;
+        }
+
+        public function prepare(
+            string $sql,
+        ): StatementInterface {
+            throw new RuntimeException('Not implemented');
+        }
+
+        public function lastInsertId(): int
+        {
+            return 0;
+        }
+
+        public function driverName(): string
+        {
+            return 'mysql';
+        }
+    };
+}
+
+/**
  * Creates a mock connection that returns predefined query results.
  *
  * @param array<string, array<int, array<string, mixed>>> $queryResults Map of SQL patterns to results
@@ -492,7 +583,112 @@ describe('MySqlIntrospector', function (): void {
             ->and($columns[1]->collation)->toBe('utf8mb4_bin')
             ->and($columns[2]->nativeType)->toBe('timestamp(3)')
             ->and($columns[2]->onUpdateExpression)->toBe('CURRENT_TIMESTAMP(3)')
-            ->and($columns[3]->onUpdateExpression)->toBe('current_timestamp()');
+            ->and($columns[3]->onUpdateExpression)->toBe('CURRENT_TIMESTAMP');
+    });
+
+    it('normalises MariaDB on update current_timestamp() to CURRENT_TIMESTAMP', function (): void {
+        $connection = createMockConnection([
+            'VERSION()' => [['version' => '11.8.7-MariaDB']],
+            'information_schema.columns' => array_map(
+                static fn (string $extra, int $index): array => [
+                    'COLUMN_NAME' => "col_$index",
+                    'DATA_TYPE' => 'timestamp',
+                    'CHARACTER_MAXIMUM_LENGTH' => null,
+                    'IS_NULLABLE' => 'NO',
+                    'COLUMN_DEFAULT' => 'current_timestamp()',
+                    'EXTRA' => $extra,
+                    'COLUMN_TYPE' => 'timestamp',
+                    'COLLATION_NAME' => null,
+                ],
+                ['on update current_timestamp()', 'on update current_timestamp(3)'],
+                [0, 1],
+            ),
+        ]);
+
+        $columns = new MySqlIntrospector($connection, 'testdb')->getColumns('items');
+
+        expect($columns[0]->onUpdateExpression)->toBe('CURRENT_TIMESTAMP');
+    });
+
+    it('keeps the precision of MariaDB on update current_timestamp(3)', function (): void {
+        $connection = createMockConnection([
+            'VERSION()' => [['version' => '11.8.7-MariaDB']],
+            'information_schema.columns' => [[
+                'COLUMN_NAME' => 'touched_at',
+                'DATA_TYPE' => 'timestamp',
+                'CHARACTER_MAXIMUM_LENGTH' => null,
+                'IS_NULLABLE' => 'NO',
+                'COLUMN_DEFAULT' => 'current_timestamp(3)',
+                'EXTRA' => 'on update current_timestamp(3)',
+                'COLUMN_TYPE' => 'timestamp(3)',
+                'COLLATION_NAME' => null,
+            ]],
+        ]);
+
+        $columns = new MySqlIntrospector($connection, 'testdb')->getColumns('items');
+
+        expect($columns[0]->onUpdateExpression)->toBe('CURRENT_TIMESTAMP(3)');
+    });
+
+    it('reports a MariaDB longtext column with a json_valid check as json', function (): void {
+        $columns = mariaDbLongtextColumns([
+            ['CONSTRAINT_NAME' => 'meta', 'CHECK_CLAUSE' => 'json_valid(`meta`)'],
+        ]);
+
+        expect($columns[0]->type)->toBe('json')
+            ->and($columns[0]->nativeType)->toBe('json');
+    });
+
+    it('reports a MariaDB json column with no length and no collation', function (): void {
+        $columns = mariaDbLongtextColumns([
+            ['CONSTRAINT_NAME' => 'meta', 'CHECK_CLAUSE' => 'json_valid(`meta`)'],
+        ]);
+
+        expect($columns[0]->length)->toBeNull()
+            ->and($columns[0]->collation)->toBeNull();
+    });
+
+    it('keeps a MariaDB longtext column without a json_valid check as longtext', function (): void {
+        $columns = mariaDbLongtextColumns([
+            ['CONSTRAINT_NAME' => 'meta', 'CHECK_CLAUSE' => 'char_length(`meta`) < 10'],
+            ['CONSTRAINT_NAME' => 'meta', 'CHECK_CLAUSE' => 'json_valid(`meta`) and char_length(`meta`) < 10'],
+        ]);
+
+        expect($columns[0]->type)->toBe('longtext')
+            ->and($columns[0]->nativeType)->toBe('longtext')
+            ->and($columns[0]->collation)->toBe('utf8mb4_bin');
+    });
+
+    it('does not treat a json_valid check on another column as json', function (): void {
+        $columns = mariaDbLongtextColumns([
+            ['CONSTRAINT_NAME' => 'meta2', 'CHECK_CLAUSE' => 'json_valid(`meta2`)'],
+            ['CONSTRAINT_NAME' => 'meta', 'CHECK_CLAUSE' => 'json_valid(`meta2`)'],
+        ]);
+
+        expect($columns[0]->type)->toBe('longtext');
+    });
+
+    it('does not read check constraints on MySQL', function (): void {
+        $connection = mariaDbLongtextConnection(
+            [['CONSTRAINT_NAME' => 'meta', 'CHECK_CLAUSE' => 'json_valid(`meta`)']],
+            version: '8.4.3',
+        );
+
+        $columns = new MySqlIntrospector($connection, 'testdb')->getColumns('items');
+
+        expect($columns[0]->type)->toBe('longtext')
+            ->and($connection->checkQueries)->toBe(0);
+    });
+
+    it('does not read check constraints when MariaDB has no longtext column', function (): void {
+        $connection = mariaDbLongtextConnection(
+            [['CONSTRAINT_NAME' => 'meta', 'CHECK_CLAUSE' => 'json_valid(`meta`)']],
+            dataType: 'text',
+        );
+
+        new MySqlIntrospector($connection, 'testdb')->getColumns('items');
+
+        expect($connection->checkQueries)->toBe(0);
     });
 
     it('selects the native type and only a collation that differs from the table default', function (): void {

@@ -148,6 +148,8 @@ readonly class MySqlIntrospector implements IntrospectorInterface
 
         $rows = $this->connection->query($sql, [$this->database, $table]);
         $mariaDb = $this->isMariaDb();
+        $hasLongtext = in_array('longtext', array_map(strtolower(...), array_column($rows, 'DATA_TYPE')), true);
+        $jsonColumns = $mariaDb && $hasLongtext ? $this->getMariaDbJsonColumns($table) : [];
         $columns = [];
 
         foreach ($rows as $row) {
@@ -158,6 +160,12 @@ readonly class MySqlIntrospector implements IntrospectorInterface
 
             $isPrimaryKey = in_array($columnName, $primaryKeyColumns, true);
             $isUnique = in_array($columnName, $uniqueColumns, true);
+
+            if (strtolower($row['DATA_TYPE']) === 'longtext' && in_array($columnName, $jsonColumns, true)) {
+                // MariaDB's JSON is an alias for LONGTEXT with a json_valid() check and utf8mb4_bin
+                $row = [...$row, 'DATA_TYPE' => 'json', 'COLUMN_TYPE' => 'json', 'COLLATION_NAME' => null];
+                $length = null;
+            }
 
             $type = $this->mapType($row['DATA_TYPE'], $row['COLUMN_TYPE']);
             $default = $mariaDb
@@ -293,13 +301,50 @@ readonly class MySqlIntrospector implements IntrospectorInterface
     }
 
     /**
+     * The columns of $table that MariaDB created as JSON. MariaDB stores JSON as LONGTEXT and adds a column check
+     * `json_valid(`col`)`, which is the only trace of the declared type.
+     *
+     * @return list<string>
+     */
+    private function getMariaDbJsonColumns(
+        string $table,
+    ): array {
+        $sql = <<<'SQL'
+            SELECT CONSTRAINT_NAME, CHECK_CLAUSE
+            FROM information_schema.CHECK_CONSTRAINTS
+            WHERE CONSTRAINT_SCHEMA = ?
+            AND TABLE_NAME = ?
+        SQL;
+
+        $columns = [];
+
+        foreach ($this->connection->query($sql, [$this->database, $table]) as $row) {
+            if (preg_match('/^json_valid\(`((?:[^`]|``)+)`\)$/i', trim((string) $row['CHECK_CLAUSE']), $matches) === 1
+                && $matches[1] === $row['CONSTRAINT_NAME']) {
+                $columns[] = str_replace('``', '`', $matches[1]);
+            }
+        }
+
+        return $columns;
+    }
+
+    /**
      * The ON UPDATE expression in a column's EXTRA, such as `CURRENT_TIMESTAMP(3)` from
-     * `DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)` (MariaDB reports `on update current_timestamp()`).
+     * `DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)`. MariaDB's `on update current_timestamp()` comes back as
+     * CURRENT_TIMESTAMP, as MySQL reports it.
      */
     private function onUpdateExpression(
         string $extra,
     ): ?string {
-        return preg_match('/\bon update (\S+)/i', $extra, $matches) === 1 ? $matches[1] : null;
+        if (preg_match('/\bon update (\S+)/i', $extra, $matches) !== 1) {
+            return null;
+        }
+
+        if (preg_match('/^current_timestamp\((\d*)\)$/i', $matches[1], $precision) === 1) {
+            return $precision[1] === '' ? 'CURRENT_TIMESTAMP' : "CURRENT_TIMESTAMP({$precision[1]})";
+        }
+
+        return $matches[1];
     }
 
     /**

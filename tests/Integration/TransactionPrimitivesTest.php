@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\Database\MySql\Tests\Integration;
 
 use Marko\Database\Exceptions\LockTimeoutException;
+use Marko\Database\Exceptions\QueryException;
 use Marko\Database\Exceptions\UniqueConstraintViolationException;
 use Marko\Database\MySql\Connection\MySqlConnection;
 use Marko\Database\MySql\Query\MySqlQueryBuilder;
@@ -191,12 +192,20 @@ describe('MySQL row locks', function (): void {
                 ->get(),
         );
 
-        expect($contend)->toThrow(LockTimeoutException::class, 'NOWAIT is set');
+        // MySQL reports NOWAIT with 3572; MariaDB has no such error and reports 1205
+        expect($contend)->toThrow(
+            LockTimeoutException::class,
+            IntegrationDatabase::isMariaDb($this->connection) ? 'Lock wait timeout exceeded' : 'NOWAIT is set',
+        );
 
         $this->connection->rollback();
     });
 
     it('lets a second connection share-lock a row that is share-locked', function (): void {
+        if (IntegrationDatabase::isMariaDb($this->connection)) {
+            $this->markTestSkipped('MariaDB rejects FOR SHARE, which sharedLock() needs with a modifier.');
+        }
+
         mysqlInsertItem($this->connection, 1, 'first');
 
         $this->connection->beginTransaction();
@@ -212,6 +221,24 @@ describe('MySQL row locks', function (): void {
         $this->connection->rollback();
 
         expect(array_column($shared, 'name'))->toBe(['first']);
+    });
+
+    it('rejects a shared lock with a modifier on MariaDB', function (): void {
+        if (!IntegrationDatabase::isMariaDb($this->connection)) {
+            $this->markTestSkipped('MySQL 8.0+ accepts FOR SHARE with SKIP LOCKED and NOWAIT.');
+        }
+
+        // The documented limitation: sharedLock() with a modifier compiles to FOR SHARE, which MariaDB lacks
+        $this->connection->beginTransaction();
+        $lock = fn (): array => new MySqlQueryBuilder($this->connection)
+            ->table('primitives_items')
+            ->sharedLock()
+            ->noWait()
+            ->get();
+
+        expect($lock)->toThrow(QueryException::class, "near 'SHARE NOWAIT'");
+
+        $this->connection->rollback();
     });
 });
 

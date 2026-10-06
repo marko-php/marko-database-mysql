@@ -47,7 +47,9 @@ beforeEach(function (): void {
 
     $this->connection = new MySqlConnection($config);
     $this->dropTables = function (): void {
-        foreach (['settle_members', 'settle_teams', 'settle_defaults', 'settle_tokens', 'settle_users'] as $table) {
+        $tables = ['settle_members', 'settle_teams', 'settle_defaults', 'settle_tokens', 'settle_documents', 'settle_users'];
+
+        foreach ($tables as $table) {
             $this->connection->execute("DROP TABLE IF EXISTS $table");
         }
     };
@@ -145,6 +147,36 @@ describe('MySQL schema diffs that settle', function (): void {
         ($this->create)($entityTable);
 
         expect(($this->diffAgainst)($entityTable)->isEmpty())->toBeTrue();
+    });
+
+    it('diffs json columns as empty after creation and after a nullability change', function (): void {
+        // MariaDB stores JSON as LONGTEXT with a json_valid() check; the introspector reads it back as json
+        $required = mysqlSettleSchema(new #[Table('settle_documents')] class () extends Entity
+        {
+            #[Column(primaryKey: true, autoIncrement: true)]
+            public int $id;
+
+            #[Column(type: 'json')]
+            public array $body;
+        });
+        $nullable = mysqlSettleSchema(new #[Table('settle_documents')] class () extends Entity
+        {
+            #[Column(primaryKey: true, autoIncrement: true)]
+            public int $id;
+
+            #[Column(type: 'json')]
+            public ?array $body;
+        });
+
+        ($this->create)($required);
+        $afterCreate = ($this->diffAgainst)($required)->isEmpty();
+        ($this->create)($nullable);
+        $body = $this->introspector->getTable('settle_documents')->columns[1];
+
+        expect($afterCreate)->toBeTrue()
+            ->and(($this->diffAgainst)($nullable)->isEmpty())->toBeTrue()
+            ->and($body->type)->toBe('json')
+            ->and($body->nullable)->toBeTrue();
     });
 
     it('diffs a table created with a unique column as empty', function (): void {

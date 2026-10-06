@@ -6,6 +6,7 @@ namespace Marko\Database\MySql\Tests\Integration;
 
 use Marko\Database\Exceptions\DeadlockException;
 use Marko\Database\Exceptions\LockTimeoutException;
+use Marko\Database\Exceptions\SerializationFailureException;
 use Marko\Database\MySql\Connection\MySqlConnection;
 use Marko\Database\MySql\Query\MySqlQueryBuilder;
 use Marko\Database\MySql\Tests\Fixtures\IntegrationDatabase;
@@ -162,7 +163,11 @@ describe('MySQL concurrency errors', function (): void {
             ->noWait()
             ->get();
 
-        expect($contend)->toThrow(LockTimeoutException::class, 'NOWAIT is set');
+        // MySQL reports NOWAIT with 3572; MariaDB has no such error and reports 1205
+        expect($contend)->toThrow(
+            LockTimeoutException::class,
+            IntegrationDatabase::isMariaDb($this->connection) ? 'Lock wait timeout exceeded' : 'NOWAIT is set',
+        );
 
         $this->observer->rollback();
         $this->connection->rollback();
@@ -216,6 +221,60 @@ describe('MySQL concurrency errors', function (): void {
         expect($attempts)->toBe(2)
             ->and($contenderOutcome)->toBe('committed')
             ->and(array_column($rows, 'n'))->toBe([2, 1])
+            ->and($this->connection->transactionLevel())->toBe(0);
+    });
+});
+
+/*
+ * MariaDB 11.8+ defaults to innodb_snapshot_isolation=ON: a REPEATABLE READ
+ * transaction that writes a row another transaction changed after its
+ * snapshot fails with 1020 (ER_CHECKREAD). MySQL lets the write through
+ * (a lost update), so these run only on MariaDB. The CI MariaDB run sets
+ * MARKO_TEST_MYSQL_SERVER=mariadb, so they cannot skip there.
+ */
+describe('MariaDB snapshot conflicts', function (): void {
+    beforeEach(function (): void {
+        if (!IntegrationDatabase::isMariaDb($this->connection)) {
+            $this->markTestSkipped('MySQL never raises 1020 for a snapshot conflict; this needs MariaDB 11.8+.');
+        }
+
+        // The 11.8 defaults, set explicitly so a server configured otherwise still conflicts
+        $this->connection->execute('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        $this->connection->execute('SET SESSION innodb_snapshot_isolation = ON');
+    });
+
+    it('raises SerializationFailureException when MariaDB detects a snapshot conflict', function (): void {
+        $this->connection->beginTransaction();
+        $this->connection->query('SELECT n FROM concurrency_items WHERE id = 1');
+        $this->observer->execute('UPDATE concurrency_items SET n = 10 WHERE id = 1');
+
+        $write = fn () => $this->connection->execute('UPDATE concurrency_items SET n = 1 WHERE id = 1');
+
+        expect($write)->toThrow(SerializationFailureException::class, 'Record has changed since last read');
+
+        $this->connection->rollback();
+    });
+
+    it('retries a MariaDB snapshot conflict to success with transaction attempts', function (): void {
+        $attempts = 0;
+
+        // Read-modify-write: the first attempt reads n, a concurrent session
+        // changes it, and the write fails instead of losing that update
+        $this->connection->transaction(function () use (&$attempts): void {
+            $attempts++;
+            $n = (int) $this->connection->query('SELECT n FROM concurrency_items WHERE id = 1')[0]['n'];
+
+            if ($attempts === 1) {
+                $this->observer->execute('UPDATE concurrency_items SET n = n + 10 WHERE id = 1');
+            }
+
+            $this->connection->execute('UPDATE concurrency_items SET n = ? WHERE id = 1', [$n + 1]);
+        }, attempts: 2);
+
+        $n = (int) $this->observer->query('SELECT n FROM concurrency_items WHERE id = 1')[0]['n'];
+
+        expect($attempts)->toBe(2)
+            ->and($n)->toBe(11)
             ->and($this->connection->transactionLevel())->toBe(0);
     });
 });
