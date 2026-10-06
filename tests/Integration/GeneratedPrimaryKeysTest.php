@@ -221,6 +221,41 @@ it('assigns consecutive auto-increment ids on insertBatch on MySQL without RETUR
         ->and(array_column($rows, 'label'))->toBe(['first', 'second', 'third']);
 });
 
+it('assigns stepped auto-increment ids on insertBatch on MySQL when auto_increment_increment is 5', function (): void {
+    if ($this->isMariaDb) {
+        $this->markTestSkipped('MariaDB reads auto-increment ids back with INSERT ... RETURNING');
+    }
+
+    $this->connection->execute('SET SESSION auto_increment_increment = 5');
+    $counters = mysqlGeneratedKeyCounters('first', 'second', 'third');
+
+    $this->counters->insertBatch($counters);
+
+    $rows = $this->connection->query('SELECT id, label FROM generated_key_counters ORDER BY id');
+    $ids = array_map(fn (MySqlGeneratedKeyCounter $counter): ?int => $counter->id, $counters);
+
+    expect($ids)->toBe(array_map(fn (array $row): int => (int) $row['id'], $rows))
+        ->and(array_column($rows, 'label'))->toBe(['first', 'second', 'third'])
+        ->and($ids[1] - $ids[0])->toBe(5);
+});
+
+it('keeps explicit auto-increment ids on insertBatch', function (): void {
+    // Non-consecutive, non-monotonic ids: mysql_insert_id() returns the first explicit value, so
+    // first-id-plus-offset arithmetic would only match by accident with consecutive ids.
+    $counters = mysqlGeneratedKeyCounters('first', 'second', 'third');
+    foreach ([10, 50, 30] as $index => $id) {
+        $counters[$index]->id = $id;
+    }
+
+    $this->counters->insertBatch($counters);
+
+    $rows = $this->connection->query('SELECT id, label FROM generated_key_counters ORDER BY id');
+
+    expect(array_map(fn (MySqlGeneratedKeyCounter $counter): ?int => $counter->id, $counters))->toBe([10, 50, 30])
+        ->and(array_map(fn (array $row): int => (int) $row['id'], $rows))->toBe([10, 30, 50])
+        ->and(array_column($rows, 'label'))->toBe(['first', 'third', 'second']);
+});
+
 it('saves an entity with a generated key column when the key is set in PHP', function (): void {
     $token = new MySqlGeneratedKeyToken();
     $token->id = '3b0c6f5e-9a1d-4c2e-8f7a-5d4b3c2a1e0f';
