@@ -154,7 +154,7 @@ describe('MySQL expression defaults the server respells', function (): void {
 
         expect(fn () => ($this->diffAgainst)($entityTable))->toThrow(
             MigrationException::class,
-            'The database rejects the default expression "(CURRENT_TIMESTAMP + INTERVAL 1 FORTNIGHT)" of column '
+            'The database rejected the default expression "(CURRENT_TIMESTAMP + INTERVAL 1 FORTNIGHT)" of column '
             . "'expression_default_items.expires_at'",
         )
             ->and($this->connection->query("SHOW TABLES LIKE 'marko_default_probe'"))->toBe([]);

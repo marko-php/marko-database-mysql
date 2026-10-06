@@ -136,7 +136,7 @@ describe('MySqlIntrospector expression default matching', function (): void {
                     ->matchesStoredDefault('events', 'label', new Expression("CONCAT('a',")),
             )->toThrow(
                 MigrationException::class,
-                "The database rejects the default expression \"CONCAT('a',\" of column 'events.label'",
+                "The database rejected the default expression \"CONCAT('a',\" of column 'events.label'",
             )->and(array_last($connection->log))->toBe('DROP TEMPORARY TABLE IF EXISTS `marko_default_probe`');
         },
     );

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\Database\MySql\Introspection;
 
 use Marko\Database\Connection\ConnectionInterface;
+use Marko\Database\Exceptions\ExpressionDefaultProbeException;
 use Marko\Database\Exceptions\MigrationException;
 use Marko\Database\Exceptions\QueryException;
 use Marko\Database\Introspection\ExpressionDefaultMatcherInterface;
@@ -217,7 +218,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
      * column's default is unescaped (MySQL only; MariaDB does not escape it) and both sides are compared without
      * wrapping parentheses.
      *
-     * @throws MigrationException When the server rejects the expression as a default for the column's type
+     * @throws ExpressionDefaultProbeException When the server rejects the expression, or the user may not create a temporary table
      */
     public function matchesStoredDefault(
         string $table,
@@ -248,7 +249,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
     /**
      * The default the server stores for $expression on a column of $columnType, as SHOW COLUMNS reports it.
      *
-     * @throws MigrationException When the server rejects the expression
+     * @throws ExpressionDefaultProbeException When the server rejects the probe table
      */
     private function probeDefault(
         string $table,
@@ -271,7 +272,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
             try {
                 $this->connection->execute($createProbe);
             } catch (QueryException $e) {
-                throw MigrationException::rejectedDefaultExpression(
+                throw ExpressionDefaultProbeException::rejected(
                     $table,
                     $column,
                     $expression->sql,
