@@ -18,6 +18,7 @@ use Marko\Database\Exceptions\QueryException;
 use Marko\Database\Exceptions\TransactionConflictException;
 use Marko\Database\Exceptions\TransactionException;
 use Marko\Database\MySql\Exceptions\ConnectionException;
+use Marko\Database\MySql\Exceptions\ServerVersionException;
 use Marko\Database\MySql\Sql\MySqlIdentifier;
 use Override;
 use PDO;
@@ -30,7 +31,12 @@ class MySqlConnection implements ConnectionInterface, TransactionInterface, Pend
     /** ER_UNKNOWN_TIME_ZONE: the server has no time zone tables, or none for this zone. */
     private const int ERROR_UNKNOWN_TIME_ZONE = 1298;
 
+    /** The first MariaDB release with INSERT ... RETURNING. */
+    private const string MARIADB_RETURNING_VERSION = '10.5';
+
     private ?PDO $pdo = null;
+
+    private ?MySqlServer $server = null;
 
     private TransactionState $transactionState;
 
@@ -269,9 +275,28 @@ class MySqlConnection implements ConnectionInterface, TransactionInterface, Pend
         return 'mysql';
     }
 
+    /**
+     * MariaDB has INSERT ... RETURNING (single and multi-row) since 10.5. MySQL has none.
+     *
+     * The server is read once per connection (see server()), so the first call connects.
+     *
+     * @throws ConnectionException|QueryException|ServerVersionException
+     */
     public function supportsReturning(): bool
     {
-        return false;
+        $version = $this->server()->version();
+
+        return $version->isMariaDb && $version->isAtLeast(self::MARIADB_RETURNING_VERSION);
+    }
+
+    /**
+     * The server this connection talks to, MySQL or MariaDB. It is built on first use and kept with the
+     * connection, so the version is read once (on the first question asked of it). The container's shared
+     * MySqlServer is this same instance (see module.php), so the query builders and the introspector share it.
+     */
+    public function server(): MySqlServer
+    {
+        return $this->server ??= new MySqlServer($this);
     }
 
     public function quoteIdentifier(

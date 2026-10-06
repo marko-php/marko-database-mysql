@@ -13,10 +13,12 @@ use Marko\Database\MySql\Exceptions\ServerVersionException;
  * whose syntax differs between them.
  *
  * The version is read with SELECT VERSION() the first time it is asked for and
- * kept for the lifetime of this object, which the container shares (one per
- * connection). It goes through ConnectionInterface, so it works through a
- * decorator such as ReadWriteConnection: a replica runs the same server type
- * as its primary.
+ * kept for the lifetime of this object. A MySqlConnection owns one
+ * (MySqlConnection::server(), which supportsReturning() asks too), and the
+ * container shares that same instance, so the version is read once per
+ * connection. It goes through ConnectionInterface, so it also works through a
+ * decorator such as ReadWriteConnection, which the container gives its own: a
+ * replica runs the same server type as its primary.
  */
 class MySqlServer
 {

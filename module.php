@@ -36,6 +36,13 @@ return [
                 $container->get(MySqlServer::class),
             );
         },
+        // The MySqlConnection's own server check, so supportsReturning() and the SQL that differs between
+        // MySQL and MariaDB read the version once. A decorator (ReadWriteConnection) gets its own.
+        MySqlServer::class => static function (ContainerInterface $container): MySqlServer {
+            $connection = $container->get(ConnectionInterface::class);
+
+            return $connection instanceof MySqlConnection ? $connection->server() : new MySqlServer($connection);
+        },
         SqlGeneratorInterface::class => MySqlGenerator::class,
         QueryBuilderInterface::class => MySqlQueryBuilder::class,
         QueryBuilderFactoryInterface::class => MySqlQueryBuilderFactory::class,

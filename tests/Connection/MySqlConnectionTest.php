@@ -22,11 +22,43 @@ describe('MySqlConnection', function (): void {
         expect($connection)->toBeInstanceOf(ConnectionInterface::class);
     });
 
-    it('reports that MySQL connections do not support RETURNING', function (): void {
-        $connection = new MySqlConnection(createTestDatabaseConfig());
+    it('supports RETURNING on MariaDB 10.5 and later', function (): void {
+        expect(connectionReportingVersion('10.5.0-MariaDB')->supportsReturning())->toBeTrue()
+            ->and(connectionReportingVersion('5.5.5-10.11.8-MariaDB-ubu2204')->supportsReturning())->toBeTrue()
+            ->and(connectionReportingVersion('11.8.7-MariaDB-ubu2404')->supportsReturning())->toBeTrue();
+    });
 
-        expect($connection->supportsReturning())->toBeFalse()
-            ->and($connection->isConnected())->toBeFalse();
+    it('does not support RETURNING on MariaDB before 10.5', function (): void {
+        expect(connectionReportingVersion('10.4.34-MariaDB')->supportsReturning())->toBeFalse();
+    });
+
+    it('does not support RETURNING on MySQL', function (): void {
+        expect(connectionReportingVersion('8.4.3')->supportsReturning())->toBeFalse()
+            ->and(connectionReportingVersion('11.0.0')->supportsReturning())->toBeFalse();
+    });
+
+    it('reads the server version once for supportsReturning and server', function (): void {
+        $versionQueries = 0;
+        $connection = connectionReportingVersion('11.8.7-MariaDB', $versionQueries);
+
+        $connection->supportsReturning();
+        $connection->supportsReturning();
+        $isMariaDb = $connection->server()->isMariaDb();
+
+        expect($versionQueries)->toBe(1)
+            ->and($isMariaDb)->toBeTrue()
+            ->and($connection->server())->toBe($connection->server());
+    });
+
+    it('does not connect until supportsReturning is asked', function (): void {
+        $connection = connectionReportingVersion('11.8.7-MariaDB');
+
+        $connection->server();
+        $connectedBefore = $connection->isConnected();
+        $connection->supportsReturning();
+
+        expect($connectedBefore)->toBeFalse()
+            ->and($connection->isConnected())->toBeTrue();
     });
 
     it('quotes identifiers with backticks without connecting', function (): void {

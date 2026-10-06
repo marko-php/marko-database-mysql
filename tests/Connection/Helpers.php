@@ -102,3 +102,41 @@ function connectAndCapturePdoOptions(DatabaseConfig $config): array
 
     return $capturedOptions;
 }
+
+/**
+ * A MySqlConnection whose server answers SELECT VERSION() with $serverVersion, through an in-memory SQLite
+ * handle. $versionQueries counts the VERSION() calls.
+ */
+function connectionReportingVersion(
+    string $serverVersion,
+    int &$versionQueries = 0,
+): MySqlConnection {
+    return new class (createTestDatabaseConfig(), $serverVersion, $versionQueries) extends MySqlConnection
+    {
+        public function __construct(
+            DatabaseConfig $config,
+            private readonly string $serverVersion,
+            /** @noinspection PhpPropertyOnlyWrittenInspection - Reference property modifies external variable */
+            private int &$versionQueries,
+        ) {
+            parent::__construct($config);
+        }
+
+        protected function createPdo(
+            string $dsn,
+            string $username,
+            string $password,
+            array $options,
+        ): PDO {
+            $pdo = new PDO\Sqlite('sqlite::memory:');
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $pdo->createFunction('VERSION', function (): string {
+                $this->versionQueries++;
+
+                return $this->serverVersion;
+            }, 0);
+
+            return $pdo;
+        }
+    };
+}

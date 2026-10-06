@@ -17,6 +17,7 @@ use Marko\Database\MySql\Connection\MySqlServer;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\AccountRepository;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\AuditEntryRepository;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\SharedConnectionContainer;
+use Marko\Database\MySql\Tests\Query\RecordingTransactionalConnection;
 use Marko\Database\Query\QueryBuilderFactoryInterface;
 use Marko\Database\Query\QueryBuilderInterface;
 use Marko\Database\Seed\SeederRunner;
@@ -164,6 +165,26 @@ describe('MySQL shared connection wiring', function (): void {
 
         expect($container->get(MySqlServer::class))->toBe($server)
             ->and($serverConnection)->toBe($container->get(ConnectionInterface::class));
+    });
+
+    it("shares the connection's own MySqlServer through the container", function (): void {
+        $container = SharedConnectionContainer::build(SharedConnectionContainer::config());
+        $connection = $container->get(ConnectionInterface::class);
+
+        expect($connection)->toBeInstanceOf(MySqlConnection::class)
+            ->and($container->get(MySqlServer::class))->toBe($connection->server());
+    });
+
+    it('builds a MySqlServer on the shared connection when it is not a MySqlConnection', function (): void {
+        $container = SharedConnectionContainer::build(SharedConnectionContainer::config());
+        $decorator = new RecordingTransactionalConnection(serverVersion: '11.8.7-MariaDB');
+        $container->instance(ConnectionInterface::class, $decorator);
+
+        $server = $container->get(MySqlServer::class);
+
+        expect(new ReflectionProperty($server, 'connection')->getValue($server))->toBe($decorator)
+            ->and($server->isMariaDb())->toBeTrue()
+            ->and($container->get(MySqlServer::class))->toBe($server);
     });
 
     it('gives query builders and the introspector the shared MySqlServer', function (): void {
