@@ -166,6 +166,11 @@ function mariaDbLongtextConnection(
         {
             return 'mysql';
         }
+
+        public function supportsReturning(): bool
+        {
+            return false;
+        }
     };
 }
 

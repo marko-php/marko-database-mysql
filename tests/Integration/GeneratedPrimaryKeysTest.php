@@ -16,7 +16,8 @@ use Marko\Database\Repository\Repository;
 
 /*
  * Database-generated primary keys against a real MySQL server, which has no
- * INSERT ... RETURNING. Set MARKO_TEST_MYSQL_HOST (and optionally
+ * INSERT ... RETURNING. CI also runs this file against MariaDB, which the
+ * driver treats the same way (supportsReturning() is false). Set MARKO_TEST_MYSQL_HOST (and optionally
  * MARKO_TEST_MYSQL_PORT, _DATABASE, _USERNAME, _PASSWORD) to enable; the tests
  * skip otherwise. The tests create and drop the generated_key_tokens table.
  *
