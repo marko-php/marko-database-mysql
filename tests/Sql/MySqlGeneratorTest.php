@@ -627,4 +627,91 @@ describe('MySqlGenerator', function (): void {
 
         expect($sql)->toContain('`metadata` JSON NOT NULL');
     });
+
+    it('generates an up MODIFY COLUMN from the new column definition', function (): void {
+        $statements = new MySqlGenerator()->generateUp(mysqlModifyDiff(
+            new Column(name: 'views', type: 'bigint', nullable: true, default: 0),
+            new Column(name: 'views', type: 'integer'),
+        ));
+
+        expect($statements)->toBe(['ALTER TABLE `posts` MODIFY COLUMN `views` BIGINT NULL DEFAULT 0']);
+    });
+
+    it('restores the old type, nullability and default of a modified column in a down migration', function (): void {
+        $statements = new MySqlGenerator()->generateDown(mysqlModifyDiff(
+            new Column(name: 'status', type: 'text', nullable: true),
+            new Column(name: 'status', type: 'string', length: 20, default: 'draft'),
+        ));
+
+        expect($statements)->toBe(["ALTER TABLE `posts` MODIFY COLUMN `status` VARCHAR(20) NOT NULL DEFAULT 'draft'"]);
+    });
+
+    it('restores a CURRENT_TIMESTAMP default unquoted in a down migration', function (): void {
+        $statements = new MySqlGenerator()->generateDown(mysqlModifyDiff(
+            new Column(name: 'created_at', type: 'timestamp', nullable: true),
+            new Column(name: 'created_at', type: 'timestamp', default: 'CURRENT_TIMESTAMP'),
+        ));
+
+        expect($statements)->toBe([
+            'ALTER TABLE `posts` MODIFY COLUMN `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP',
+        ]);
+    });
+
+    it('restores modified columns before re-adding dropped foreign keys in a down migration', function (): void {
+        $foreignKey = new ForeignKey(
+            name: 'posts_author_id_foreign',
+            columns: ['author_id'],
+            referencedTable: 'users',
+            referencedColumns: ['id'],
+        );
+        $diff = new SchemaDiff(tablesToAlter: [
+            'posts' => new TableDiff(
+                tableName: 'posts',
+                columnsToModify: ['author_id' => new Column(name: 'author_id', type: 'bigint')],
+                foreignKeysToDrop: [$foreignKey],
+                columnsToModifyFrom: ['author_id' => new Column(name: 'author_id', type: 'integer')],
+            ),
+        ]);
+
+        $statements = new MySqlGenerator()->generateDown($diff);
+
+        expect($statements)->toHaveCount(2)
+            ->and($statements[0])->toBe('ALTER TABLE `posts` MODIFY COLUMN `author_id` INT NOT NULL')
+            ->and($statements[1])->toContain('ADD CONSTRAINT `posts_author_id_foreign`');
+    });
+
+    it(
+        'throws a MigrationException naming the column when a down migration lacks the previous column',
+        function (): void {
+            $diff = new SchemaDiff(tablesToAlter: [
+                'posts' => new TableDiff(
+                    tableName: 'posts',
+                    columnsToModify: ['status' => new Column(name: 'status', type: 'string', default: 'live')],
+                ),
+            ]);
+
+            expect(fn () => new MySqlGenerator()->generateDown($diff))->toThrow(
+                MigrationException::class,
+                "Column 'posts.status' is modified, but the diff holds no previous definition for it",
+            )->and(new MySqlGenerator()->generateUp($diff))->toBe([
+                "ALTER TABLE `posts` MODIFY COLUMN `status` VARCHAR(255) NOT NULL DEFAULT 'live'",
+            ]);
+        },
+    );
 });
+
+/**
+ * A schema diff that modifies one column of the posts table.
+ */
+function mysqlModifyDiff(
+    Column $column,
+    Column $previous,
+): SchemaDiff {
+    return new SchemaDiff(tablesToAlter: [
+        'posts' => new TableDiff(
+            tableName: 'posts',
+            columnsToModify: [$column->name => $column],
+            columnsToModifyFrom: [$column->name => $previous],
+        ),
+    ]);
+}

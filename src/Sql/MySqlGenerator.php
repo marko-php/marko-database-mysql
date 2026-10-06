@@ -465,10 +465,13 @@ class MySqlGenerator implements SqlGeneratorInterface
         }
 
         // Modify columns
+        // MODIFY COLUMN restates the full new definition, so the previous column is optional here
         foreach ($tableDiff->columnsToModify as $columnName => $column) {
-            // For modify, we need the old column - create a placeholder
-            $oldColumn = new Column(name: $columnName, type: 'string');
-            $statements[] = $this->generateModifyColumn($tableDiff->tableName, $column, $oldColumn);
+            $statements[] = $this->generateModifyColumn(
+                $tableDiff->tableName,
+                $column,
+                $tableDiff->columnsToModifyFrom[$columnName] ?? new Column(name: $columnName, type: 'string'),
+            );
         }
 
         // Add indexes
@@ -512,6 +515,15 @@ class MySqlGenerator implements SqlGeneratorInterface
         // Reverse: add columns that were dropped
         foreach ($tableDiff->columnsToDrop as $column) {
             $statements[] = $this->generateAddColumn($tableDiff->tableName, $column);
+        }
+
+        // Reverse: restore modified columns to their previous definition
+        foreach ($tableDiff->columnsToModify as $columnName => $column) {
+            $statements[] = $this->generateModifyColumn(
+                $tableDiff->tableName,
+                $tableDiff->previousColumn($columnName),
+                $column,
+            );
         }
 
         // Reverse: add indexes that were dropped
