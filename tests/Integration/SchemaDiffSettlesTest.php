@@ -16,6 +16,7 @@ use Marko\Database\MySql\Connection\MySqlConnection;
 use Marko\Database\MySql\Introspection\MySqlIntrospector;
 use Marko\Database\MySql\Sql\MySqlGenerator;
 use Marko\Database\MySql\Tests\Fixtures\IntegrationDatabase;
+use Marko\Database\Schema\IdentifierName;
 use Marko\Database\Schema\Table as SchemaTable;
 
 /*
@@ -47,7 +48,15 @@ beforeEach(function (): void {
 
     $this->connection = new MySqlConnection($config);
     $this->dropTables = function (): void {
-        $tables = ['settle_members', 'settle_teams', 'settle_defaults', 'settle_tokens', 'settle_documents', 'settle_users'];
+        $tables = [
+            'settle_customer_subscription_events',
+            'settle_members',
+            'settle_teams',
+            'settle_defaults',
+            'settle_tokens',
+            'settle_documents',
+            'settle_users',
+        ];
 
         foreach ($tables as $table) {
             $this->connection->execute("DROP TABLE IF EXISTS $table");
@@ -94,6 +103,39 @@ beforeEach(function (): void {
         #[Column(length: 191, unique: true)]
         public string $email;
     });
+
+    // Every name derived from this table and column is over 63 bytes before shortening
+    $this->longBody = 'settle_customer_subscription_events_external_billing_reference_id';
+
+    $this->plainEvents = mysqlSettleSchema(new #[Table('settle_customer_subscription_events')] class () extends Entity
+    {
+        #[Column(primaryKey: true, autoIncrement: true)]
+        public int $id;
+
+        #[Column]
+        public int $externalBillingReferenceId;
+    });
+
+    $this->linkedEvents = mysqlSettleSchema(new #[Table('settle_customer_subscription_events')] class () extends Entity
+    {
+        #[Column(primaryKey: true, autoIncrement: true)]
+        public int $id;
+
+        #[Column(unique: true, references: 'settle_users.id')]
+        public int $externalBillingReferenceId;
+    });
+
+    $this->referencedEvents = mysqlSettleSchema(
+        new #[Table('settle_customer_subscription_events')]
+        class () extends Entity
+        {
+            #[Column(primaryKey: true, autoIncrement: true)]
+            public int $id;
+
+            #[Column(references: 'settle_users.id')]
+            public int $externalBillingReferenceId;
+        },
+    );
 });
 
 afterEach(function (): void {
@@ -261,4 +303,35 @@ describe('MySQL schema diffs that settle', function (): void {
             ->and($settledAfterUp)->toBeTrue()
             ->and(($this->diffAgainst)($uniqueMembers)->isEmpty())->toBeTrue();
     });
+
+    it(
+        'adds a unique index and foreign key with over-long derived names and the diff is then empty',
+        function (): void {
+            ($this->create)($this->plainUsers);
+            ($this->create)($this->plainEvents);
+            ($this->run)($this->generator->generateUp(($this->diffAgainst)($this->linkedEvents)));
+            $table = $this->introspector->getTable('settle_customer_subscription_events');
+
+            expect(($this->diffAgainst)($this->linkedEvents)->isEmpty())->toBeTrue()
+                ->and(array_column($table->indexes, 'name'))
+                ->toContain(IdentifierName::derive($this->longBody, suffix: '_unique'))
+                ->and(array_column($table->foreignKeys, 'name'))
+                ->toContain(IdentifierName::derive($this->longBody, prefix: 'fk_'));
+        },
+    );
+
+    it(
+        'adds the over-long derived replacement index when a foreign key column stops being unique',
+        function (): void {
+            ($this->create)($this->plainUsers);
+            ($this->create)($this->plainEvents);
+            ($this->run)($this->generator->generateUp(($this->diffAgainst)($this->linkedEvents)));
+            ($this->run)($this->generator->generateUp(($this->diffAgainst)($this->referencedEvents)));
+            $table = $this->introspector->getTable('settle_customer_subscription_events');
+
+            expect(($this->diffAgainst)($this->referencedEvents)->isEmpty())->toBeTrue()
+                ->and(array_column($table->indexes, 'name'))
+                ->toContain(IdentifierName::derive($this->longBody, suffix: '_index'));
+        },
+    );
 });
