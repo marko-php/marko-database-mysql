@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace Marko\Database\MySql\Tests\Integration;
 
 use Marko\Database\Config\DatabaseConfig;
+use Marko\Database\Exceptions\LockTimeoutException;
+use Marko\Database\Exceptions\UniqueConstraintViolationException;
 use Marko\Database\MySql\Connection\MySqlConnection;
 use Marko\Database\MySql\Query\MySqlQueryBuilder;
 use Marko\Database\MySql\Tests\Fixtures\SharedConnection\SharedConnectionContainer;
-use PDOException;
 use RuntimeException;
 
 /**
@@ -37,13 +38,17 @@ function mysqlPrimitivesConfig(): ?DatabaseConfig
 /**
  * @return list<string>
  */
-function mysqlPrimitiveNames(MySqlConnection $connection): array
-{
+function mysqlPrimitiveNames(
+    MySqlConnection $connection,
+): array {
     return array_column($connection->query('SELECT name FROM primitives_items ORDER BY id'), 'name');
 }
 
-function mysqlInsertItem(MySqlConnection $connection, int $id, string $name): void
-{
+function mysqlInsertItem(
+    MySqlConnection $connection,
+    int $id,
+    string $name,
+): void {
     $connection->execute('INSERT INTO primitives_items (id, name) VALUES (?, ?)', [$id, $name]);
 }
 
@@ -97,7 +102,7 @@ describe('MySQL nested transactions', function (): void {
                     // it must undo the inner insert and keep the outer one.
                     mysqlInsertItem($this->connection, 1, 'duplicate key');
                 });
-            } catch (PDOException) {
+            } catch (UniqueConstraintViolationException) {
                 // Handled: only the savepoint is rolled back.
             }
 
@@ -199,7 +204,7 @@ describe('MySQL row locks', function (): void {
                 ->get(),
         );
 
-        expect($contend)->toThrow(PDOException::class, 'NOWAIT is set');
+        expect($contend)->toThrow(LockTimeoutException::class, 'NOWAIT is set');
 
         $this->connection->rollback();
     });

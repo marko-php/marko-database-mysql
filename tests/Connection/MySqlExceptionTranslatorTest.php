@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 use Marko\Database\Exceptions\CheckConstraintViolationException;
 use Marko\Database\Exceptions\ConstraintViolationException;
+use Marko\Database\Exceptions\DeadlockException;
 use Marko\Database\Exceptions\ForeignKeyConstraintViolationException;
+use Marko\Database\Exceptions\LockTimeoutException;
 use Marko\Database\Exceptions\NotNullConstraintViolationException;
 use Marko\Database\Exceptions\QueryException;
+use Marko\Database\Exceptions\TransactionConflictException;
 use Marko\Database\Exceptions\UniqueConstraintViolationException;
 use Marko\Database\MySql\Connection\MySqlExceptionTranslator;
 
@@ -189,6 +192,8 @@ describe('MySqlExceptionTranslator', function (): void {
 
         expect($exception)->toBeInstanceOf(QueryException::class)
             ->and($exception)->not->toBeInstanceOf(ConstraintViolationException::class)
+            ->and($exception)->not->toBeInstanceOf(TransactionConflictException::class)
+            ->and($exception)->not->toBeInstanceOf(LockTimeoutException::class)
             ->and($exception->sqlState())->toBe('42S02')
             ->and($exception->getPrevious())->toBe($pdoException);
     });
@@ -207,5 +212,56 @@ describe('MySqlExceptionTranslator', function (): void {
 
         expect($exception)->toBeInstanceOf(UniqueConstraintViolationException::class)
             ->and($exception->constraintName())->toBe('users_email_unique');
+    });
+
+    it('translates error 1213 into DeadlockException', function (): void {
+        $pdoException = mysqlDriverError(
+            '40001',
+            1213,
+            'Deadlock found when trying to get lock; try restarting transaction',
+        );
+
+        $exception = new MySqlExceptionTranslator()->translate($pdoException, 'UPDATE accounts SET n = ?', [1]);
+
+        expect($exception)->toBeInstanceOf(DeadlockException::class)
+            ->and($exception->sqlState())->toBe('40001')
+            ->and($exception->getPrevious())->toBe($pdoException);
+    });
+
+    it('translates error 1205 into LockTimeoutException', function (): void {
+        $pdoException = mysqlDriverError('HY000', 1205, 'Lock wait timeout exceeded; try restarting transaction');
+
+        $exception = new MySqlExceptionTranslator()->translate($pdoException, 'UPDATE accounts SET n = ?', [1]);
+
+        expect($exception)->toBeInstanceOf(LockTimeoutException::class)
+            ->and($exception->sqlState())->toBe('HY000');
+    });
+
+    it('translates error 3572 into LockTimeoutException', function (): void {
+        $pdoException = mysqlDriverError(
+            'HY000',
+            3572,
+            'Statement aborted because lock(s) could not be acquired immediately and NOWAIT is set.',
+        );
+
+        $exception = new MySqlExceptionTranslator()->translate(
+            $pdoException,
+            'SELECT * FROM `jobs` WHERE `id` = ? FOR UPDATE NOWAIT',
+            [1],
+        );
+
+        expect($exception)->toBeInstanceOf(LockTimeoutException::class);
+    });
+
+    it('reads a deadlock error number from the message when errorInfo is missing', function (): void {
+        $pdoException = new PDOException(
+            'SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; '
+            . 'try restarting transaction',
+        );
+        (new ReflectionProperty(Exception::class, 'code'))->setValue($pdoException, '40001');
+
+        $exception = new MySqlExceptionTranslator()->translate($pdoException, 'UPDATE accounts SET n = ?', [1]);
+
+        expect($exception)->toBeInstanceOf(DeadlockException::class);
     });
 });

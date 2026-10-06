@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Marko\Database\MySql\Connection;
 
 use Marko\Database\Exceptions\CheckConstraintViolationException;
+use Marko\Database\Exceptions\DeadlockException;
 use Marko\Database\Exceptions\ForeignKeyConstraintViolationException;
+use Marko\Database\Exceptions\LockTimeoutException;
 use Marko\Database\Exceptions\NotNullConstraintViolationException;
 use Marko\Database\Exceptions\QueryException;
 use Marko\Database\Exceptions\UniqueConstraintViolationException;
@@ -21,6 +23,10 @@ use PDOException;
  * - 1048 column cannot be null,
  *   1364 field has no default value            → NotNullConstraintViolationException
  * - 3819 (MySQL), 4025 (MariaDB) check failed  → CheckConstraintViolationException
+ * - 1213 deadlock found (SQLSTATE 40001, also
+ *   how InnoDB reports serialization conflicts) → DeadlockException
+ * - 1205 lock wait timeout exceeded,
+ *   3572 lock not acquired with NOWAIT         → LockTimeoutException
  * - anything else                              → QueryException
  *
  * The constraint, table and column are parsed from the server message.
@@ -71,6 +77,8 @@ class MySqlExceptionTranslator
                 constraintName: $this->match('/CONSTRAINT `([^`]+)` failed/', $serverMessage),
                 table: $this->match('/failed for `[^`]+`\.`([^`]+)`/', $serverMessage) ?? $this->tableFromSql($sql),
             ),
+            1213 => DeadlockException::fromDriverError($exception, $sql, $bindings),
+            1205, 3572 => LockTimeoutException::fromDriverError($exception, $sql, $bindings),
             default => QueryException::fromDriverError($exception, $sql, $bindings),
         };
     }
