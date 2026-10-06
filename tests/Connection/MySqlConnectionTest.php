@@ -614,7 +614,11 @@ describe('MySqlConnection', function (): void {
 
     it('passes SSL client cert in PDO options when configured', function (): void {
         $options = connectAndCapturePdoOptions(
-            createTestDatabaseConfig(sslCert: '/path/to/client-cert.pem', sslKey: '/path/to/client-key.pem'),
+            createTestDatabaseConfig(
+                sslCa: '/path/to/ca.pem',
+                sslCert: '/path/to/client-cert.pem',
+                sslKey: '/path/to/client-key.pem',
+            ),
         );
 
         expect($options[PDO\Mysql::ATTR_SSL_CERT])->toBe('/path/to/client-cert.pem');
@@ -622,7 +626,11 @@ describe('MySqlConnection', function (): void {
 
     it('passes SSL client key in PDO options when configured', function (): void {
         $options = connectAndCapturePdoOptions(
-            createTestDatabaseConfig(sslCert: '/path/to/client-cert.pem', sslKey: '/path/to/client-key.pem'),
+            createTestDatabaseConfig(
+                sslCa: '/path/to/ca.pem',
+                sslCert: '/path/to/client-cert.pem',
+                sslKey: '/path/to/client-key.pem',
+            ),
         );
 
         expect($options[PDO\Mysql::ATTR_SSL_KEY])->toBe('/path/to/client-key.pem');
