@@ -59,6 +59,11 @@ class LimitOffsetMockConnection implements ConnectionInterface
     {
         return 'mysql';
     }
+
+    public function supportsReturning(): bool
+    {
+        return false;
+    }
 }
 
 describe('MySqlQueryBuilder limit/offset clause', function (): void {

@@ -231,6 +231,11 @@ function createMockConnection(
         {
             return 'sqlite';
         }
+
+        public function supportsReturning(): bool
+        {
+            return false;
+        }
     };
 }
 
@@ -738,6 +743,11 @@ describe('MySqlIntrospector', function (): void {
             {
                 return 'mysql';
             }
+
+            public function supportsReturning(): bool
+            {
+                return false;
+            }
         };
 
         new MySqlIntrospector($connection, 'testdb')->getColumns('products');
@@ -975,6 +985,11 @@ describe('MySqlIntrospector', function (): void {
             {
                 return 'sqlite';
             }
+
+            public function supportsReturning(): bool
+            {
+                return false;
+            }
         };
 
         $introspector = new MySqlIntrospector($connection, 'my_app_db');
@@ -1092,6 +1107,11 @@ describe('MySqlIntrospector', function (): void {
             public function driverName(): string
             {
                 return 'sqlite';
+            }
+
+            public function supportsReturning(): bool
+            {
+                return false;
             }
         };
 

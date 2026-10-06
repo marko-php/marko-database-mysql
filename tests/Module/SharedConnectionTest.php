@@ -117,6 +117,11 @@ describe('MySQL shared connection wiring', function (): void {
             {
                 return 'mysql';
             }
+
+            public function supportsReturning(): bool
+            {
+                return false;
+            }
         });
 
         expect(fn () => $container->get(TransactionInterface::class))

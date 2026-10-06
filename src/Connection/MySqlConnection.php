@@ -242,6 +242,11 @@ class MySqlConnection implements ConnectionInterface, TransactionInterface, Pend
         return 'mysql';
     }
 
+    public function supportsReturning(): bool
+    {
+        return false;
+    }
+
     /**
      * Open a transaction, or a savepoint named marko_sp_{depth} when one is
      * already open.

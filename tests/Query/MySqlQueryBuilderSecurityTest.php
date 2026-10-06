@@ -69,6 +69,11 @@ class SecurityMockConnection implements ConnectionInterface
     {
         return 'mysql';
     }
+
+    public function supportsReturning(): bool
+    {
+        return false;
+    }
 }
 
 describe('MySqlQueryBuilder security hardening', function (): void {

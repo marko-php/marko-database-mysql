@@ -21,6 +21,13 @@ describe('MySqlConnection', function (): void {
         expect($connection)->toBeInstanceOf(ConnectionInterface::class);
     });
 
+    it('reports that MySQL connections do not support RETURNING', function (): void {
+        $connection = new MySqlConnection(createTestDatabaseConfig());
+
+        expect($connection->supportsReturning())->toBeFalse()
+            ->and($connection->isConnected())->toBeFalse();
+    });
+
     it('constructs proper MySQL DSN from config', function (): void {
         $config = createTestDatabaseConfig(
             host: 'db.example.com',

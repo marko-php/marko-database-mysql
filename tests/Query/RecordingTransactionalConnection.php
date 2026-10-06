@@ -77,6 +77,11 @@ class RecordingTransactionalConnection implements ConnectionInterface, Transacti
         return 'mysql';
     }
 
+    public function supportsReturning(): bool
+    {
+        return false;
+    }
+
     public function beginTransaction(): void
     {
         $this->open = true;
