@@ -6,6 +6,8 @@ namespace Marko\Database\MySql\Introspection;
 
 use Marko\Database\Connection\ConnectionInterface;
 use Marko\Database\Exceptions\MigrationException;
+use Marko\Database\Exceptions\QueryException;
+use Marko\Database\Introspection\ExpressionDefaultMatcherInterface;
 use Marko\Database\Introspection\IntrospectorInterface;
 use Marko\Database\Schema\Column;
 use Marko\Database\Schema\Expression;
@@ -15,8 +17,22 @@ use Marko\Database\Schema\IndexType;
 use Marko\Database\Schema\Literal;
 use Marko\Database\Schema\Table;
 
-readonly class MySqlIntrospector implements IntrospectorInterface
+readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDefaultMatcherInterface
 {
+    /**
+     * The temporary table and column matchesStoredDefault() declares an expression default on.
+     */
+    private const string DEFAULT_PROBE_TABLE = 'marko_default_probe';
+
+    private const string DEFAULT_PROBE_COLUMN = 'probe';
+
+    /**
+     * Expression defaults MySqlGenerator writes without parentheses: CURRENT_TIMESTAMP and its synonyms, with or
+     * without a precision.
+     */
+    private const string BARE_EXPRESSION_PATTERN =
+        '/^(?:(?:CURRENT_TIMESTAMP|LOCALTIMESTAMP|LOCALTIME)(?:\(\d*\))?|NOW\(\d*\))$/i';
+
     /**
      * The CURRENT_TIMESTAMP family, the only expression defaults a server without DEFAULT_GENERATED reports.
      */
@@ -188,6 +204,105 @@ readonly class MySqlIntrospector implements IntrospectorInterface
         }
 
         return $columns;
+    }
+
+    /**
+     * Whether the column would report the default it has now if it were declared with $expression.
+     *
+     * It creates a temporary table with one column of the real column's type and the expression as its default
+     * (CREATE and DROP TEMPORARY TABLE never commit a transaction), reads the stored default back with SHOW
+     * COLUMNS, since temporary tables are not in information_schema, and drops the table again. SHOW COLUMNS
+     * spells a temporary table's default without the backslash escaping MySQL's information_schema applies
+     * (`concat(_utf8mb4'a')` against `concat(_utf8mb4\'a\')`) and in one more pair of parentheses, so the real
+     * column's default is unescaped (MySQL only; MariaDB does not escape it) and both sides are compared without
+     * wrapping parentheses.
+     *
+     * @throws MigrationException When the server rejects the expression as a default for the column's type
+     */
+    public function matchesStoredDefault(
+        string $table,
+        string $column,
+        Expression $expression,
+    ): bool {
+        $sql = <<<'SQL'
+            SELECT COLUMN_TYPE, COLUMN_DEFAULT
+            FROM information_schema.columns
+            WHERE TABLE_SCHEMA = ?
+            AND TABLE_NAME = ?
+            AND COLUMN_NAME = ?
+        SQL;
+
+        $row = $this->connection->query($sql, [$this->database, $table, $column])[0] ?? null;
+
+        if ($row === null || $row['COLUMN_DEFAULT'] === null) {
+            return false;
+        }
+
+        $stored = (string) $row['COLUMN_DEFAULT'];
+        $stored = $this->isMariaDb() ? $stored : strtr($stored, ['\\\\' => '\\', "\\'" => "'"]);
+        $probe = $this->probeDefault($table, $column, (string) $row['COLUMN_TYPE'], $expression);
+
+        return $probe !== null && Expression::unwrap($probe) === Expression::unwrap($stored);
+    }
+
+    /**
+     * The default the server stores for $expression on a column of $columnType, as SHOW COLUMNS reports it.
+     *
+     * @throws MigrationException When the server rejects the expression
+     */
+    private function probeDefault(
+        string $table,
+        string $column,
+        string $columnType,
+        Expression $expression,
+    ): ?string {
+        $dropProbe = 'DROP TEMPORARY TABLE IF EXISTS `' . self::DEFAULT_PROBE_TABLE . '`';
+        $createProbe = sprintf(
+            'CREATE TEMPORARY TABLE `%s` (`%s` %s NULL DEFAULT %s)',
+            self::DEFAULT_PROBE_TABLE,
+            self::DEFAULT_PROBE_COLUMN,
+            $columnType,
+            $this->formatDefaultExpression($expression->sql),
+        );
+
+        $this->connection->execute($dropProbe);
+
+        try {
+            try {
+                $this->connection->execute($createProbe);
+            } catch (QueryException $e) {
+                throw MigrationException::rejectedDefaultExpression(
+                    $table,
+                    $column,
+                    $expression->sql,
+                    $e->getMessage(),
+                );
+            }
+
+            $rows = $this->connection->query('SHOW COLUMNS FROM `' . self::DEFAULT_PROBE_TABLE . '`');
+        } finally {
+            $this->connection->execute($dropProbe);
+        }
+
+        $default = $rows[0]['Default'] ?? null;
+
+        return $default === null ? null : (string) $default;
+    }
+
+    /**
+     * An expression default as MySqlGenerator writes it: the CURRENT_TIMESTAMP family bare, anything else in
+     * parentheses (MySQL 8.0.13+ requires them).
+     */
+    private function formatDefaultExpression(
+        string $sql,
+    ): string {
+        $sql = trim($sql);
+
+        if (preg_match(self::BARE_EXPRESSION_PATTERN, $sql) === 1) {
+            return $sql;
+        }
+
+        return '(' . Expression::unwrap($sql) . ')';
     }
 
     /**
