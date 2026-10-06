@@ -19,13 +19,15 @@ Create `config/database.php` with a flat array of connection details:
 
 declare(strict_types=1);
 
+use Marko\Config\Env;
+
 return [
     'driver' => 'mysql',
-    'host' => $_ENV['DB_HOST'] ?? 'localhost',
-    'port' => (int) ($_ENV['DB_PORT'] ?? 3306),
-    'database' => $_ENV['DB_DATABASE'] ?? 'marko',
-    'username' => $_ENV['DB_USERNAME'] ?? 'root',
-    'password' => $_ENV['DB_PASSWORD'] ?? '',
+    'host' => Env::string('DB_HOST', 'localhost'),
+    'port' => Env::int('DB_PORT', 3306, min: 1, max: 65535),
+    'database' => Env::string('DB_DATABASE', 'marko'),
+    'username' => Env::string('DB_USERNAME', 'root'),
+    'password' => Env::string('DB_PASSWORD', ''),
 ];
 ```
 
