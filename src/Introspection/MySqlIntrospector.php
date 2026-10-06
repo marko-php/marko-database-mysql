@@ -10,6 +10,7 @@ use Marko\Database\Exceptions\MigrationException;
 use Marko\Database\Exceptions\QueryException;
 use Marko\Database\Introspection\ExpressionDefaultMatcherInterface;
 use Marko\Database\Introspection\IntrospectorInterface;
+use Marko\Database\MySql\Sql\MySqlIdentifier;
 use Marko\Database\Schema\Column;
 use Marko\Database\Schema\Expression;
 use Marko\Database\Schema\ForeignKey;
@@ -257,11 +258,12 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
         string $columnType,
         Expression $expression,
     ): ?string {
-        $dropProbe = 'DROP TEMPORARY TABLE IF EXISTS `' . self::DEFAULT_PROBE_TABLE . '`';
+        $probeTable = MySqlIdentifier::quote(self::DEFAULT_PROBE_TABLE);
+        $dropProbe = "DROP TEMPORARY TABLE IF EXISTS $probeTable";
         $createProbe = sprintf(
-            'CREATE TEMPORARY TABLE `%s` (`%s` %s NULL DEFAULT %s)',
-            self::DEFAULT_PROBE_TABLE,
-            self::DEFAULT_PROBE_COLUMN,
+            'CREATE TEMPORARY TABLE %s (%s %s NULL DEFAULT %s)',
+            $probeTable,
+            MySqlIdentifier::quote(self::DEFAULT_PROBE_COLUMN),
             $columnType,
             $this->formatDefaultExpression($expression->sql),
         );
@@ -280,7 +282,7 @@ readonly class MySqlIntrospector implements IntrospectorInterface, ExpressionDef
                 );
             }
 
-            $rows = $this->connection->query('SHOW COLUMNS FROM `' . self::DEFAULT_PROBE_TABLE . '`');
+            $rows = $this->connection->query("SHOW COLUMNS FROM $probeTable");
         } finally {
             $this->connection->execute($dropProbe);
         }

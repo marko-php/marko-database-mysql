@@ -10,6 +10,7 @@ use Marko\Database\Exceptions\InvalidColumnException;
 use Marko\Database\Exceptions\LockException;
 use Marko\Database\Exceptions\UnionShapeMismatchException;
 use Marko\Database\Exceptions\UpsertException;
+use Marko\Database\MySql\Sql\MySqlIdentifier;
 use Marko\Database\Query\IdentifierValidator;
 use Marko\Database\Query\JsonPathParser;
 use Marko\Database\Query\QueryBuilderInterface;
@@ -765,10 +766,7 @@ class MySqlQueryBuilder implements QueryBuilderInterface
     }
 
     /**
-     * Quote a database identifier with backticks (MySQL style).
-     *
-     * Embedded backticks are doubled (`` ` `` → ` `` ``) per part to prevent
-     * delimiter break-out.
+     * Quote a database identifier through the driver's one quoting rule, MySqlIdentifier.
      *
      * @param string $identifier The identifier to quote
      * @return string The quoted identifier
@@ -776,17 +774,7 @@ class MySqlQueryBuilder implements QueryBuilderInterface
     protected function quoteIdentifier(
         string $identifier,
     ): string {
-        // Handle table.column format
-        if (str_contains($identifier, '.')) {
-            $parts = explode('.', $identifier);
-
-            return implode('.', array_map(
-                fn ($part) => '`' . IdentifierValidator::escapeDelimiter($part, '`') . '`',
-                $parts,
-            ));
-        }
-
-        return '`' . IdentifierValidator::escapeDelimiter($identifier, '`') . '`';
+        return MySqlIdentifier::quote($identifier);
     }
 
     /**

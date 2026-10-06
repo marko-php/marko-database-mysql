@@ -18,6 +18,7 @@ use Marko\Database\Exceptions\QueryException;
 use Marko\Database\Exceptions\TransactionConflictException;
 use Marko\Database\Exceptions\TransactionException;
 use Marko\Database\MySql\Exceptions\ConnectionException;
+use Marko\Database\MySql\Sql\MySqlIdentifier;
 use Override;
 use PDO;
 use PDOException;
@@ -271,6 +272,12 @@ class MySqlConnection implements ConnectionInterface, TransactionInterface, Pend
     public function supportsReturning(): bool
     {
         return false;
+    }
+
+    public function quoteIdentifier(
+        string $identifier,
+    ): string {
+        return MySqlIdentifier::quote($identifier);
     }
 
     /**

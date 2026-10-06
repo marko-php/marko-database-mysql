@@ -74,6 +74,12 @@ class SecurityMockConnection implements ConnectionInterface
     {
         return false;
     }
+
+    public function quoteIdentifier(
+        string $identifier,
+    ): string {
+        return '"' . str_replace('"', '""', $identifier) . '"';
+    }
 }
 
 describe('MySqlQueryBuilder security hardening', function (): void {

@@ -122,6 +122,12 @@ describe('MySQL shared connection wiring', function (): void {
             {
                 return false;
             }
+
+            public function quoteIdentifier(
+                string $identifier,
+            ): string {
+                return '"' . str_replace('"', '""', $identifier) . '"';
+            }
         });
 
         expect(fn () => $container->get(TransactionInterface::class))

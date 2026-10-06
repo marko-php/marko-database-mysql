@@ -29,6 +29,15 @@ describe('MySqlConnection', function (): void {
             ->and($connection->isConnected())->toBeFalse();
     });
 
+    it('quotes identifiers with backticks without connecting', function (): void {
+        $connection = new MySqlConnection(createTestDatabaseConfig());
+
+        expect($connection->quoteIdentifier('group'))->toBe('`group`')
+            ->and($connection->quoteIdentifier('permissions.key'))->toBe('`permissions`.`key`')
+            ->and($connection->quoteIdentifier('we`ird'))->toBe('`we``ird`')
+            ->and($connection->isConnected())->toBeFalse();
+    });
+
     it('constructs proper MySQL DSN from config', function (): void {
         $config = createTestDatabaseConfig(
             host: 'db.example.com',

@@ -1125,3 +1125,71 @@ function mysqlModifyDiff(
         ),
     ]);
 }
+
+describe('MySqlGenerator identifier quoting', function (): void {
+    beforeEach(function (): void {
+        $this->generator = new MySqlGenerator();
+    });
+
+    it('escapes a backtick in a table name in CREATE TABLE', function (): void {
+        $sql = $this->generator->generateCreateTable(new Table(
+            name: 'we`ird',
+            columns: [new Column(name: 'id', type: 'integer', primaryKey: true, autoIncrement: true)],
+        ));
+
+        expect($sql)->toContain('CREATE TABLE `we``ird`')
+            ->and($this->generator->generateDropTable('we`ird'))->toBe('DROP TABLE `we``ird`');
+    });
+
+    it('escapes a backtick in a column name in ADD COLUMN', function (): void {
+        $sql = $this->generator->generateAddColumn('posts', new Column(name: 'ti`tle', type: 'string'));
+
+        expect($sql)->toStartWith('ALTER TABLE `posts` ADD COLUMN `ti``tle` VARCHAR(255)')
+            ->and($this->generator->generateDropColumn('posts', 'ti`tle'))
+            ->toBe('ALTER TABLE `posts` DROP COLUMN `ti``tle`');
+    });
+
+    it('escapes a backtick in index, foreign key and referenced names', function (): void {
+        $index = $this->generator->generateAddIndex('posts', new Index(name: 'idx`a', columns: ['col`a']));
+        $foreignKey = $this->generator->generateAddForeignKey('posts', new ForeignKey(
+            name: 'fk`a',
+            columns: ['user`id'],
+            referencedTable: 'us`ers',
+            referencedColumns: ['i`d'],
+        ));
+
+        expect($index)->toBe('CREATE INDEX `idx``a` ON `posts` (`col``a`)')
+            ->and($foreignKey)->toBe(
+                'ALTER TABLE `posts` ADD CONSTRAINT `fk``a` FOREIGN KEY (`user``id`) REFERENCES `us``ers` (`i``d`)',
+            )
+            ->and($this->generator->generateDropIndex('posts', 'idx`a'))->toBe('DROP INDEX `idx``a` ON `posts`')
+            ->and($this->generator->generateDropForeignKey('posts', 'fk`a'))
+            ->toBe('ALTER TABLE `posts` DROP FOREIGN KEY `fk``a`');
+    });
+
+    it('quotes reserved-word columns in generated DDL', function (): void {
+        $sql = $this->generator->generateCreateTable(new Table(
+            name: 'permissions',
+            columns: [
+                new Column(name: 'key', type: 'string'),
+                new Column(name: 'group', type: 'string'),
+                new Column(name: 'order', type: 'integer'),
+            ],
+        ));
+
+        expect($sql)->toContain('`key` VARCHAR(255) NOT NULL')
+            ->and($sql)->toContain('`group` VARCHAR(255) NOT NULL')
+            ->and($sql)->toContain('`order` INT NOT NULL');
+    });
+
+    it('has no inline backtick identifier quoting in the generator, query builder or introspector', function (): void {
+        $source = dirname(__DIR__, 2) . '/src';
+
+        foreach (['Sql/MySqlGenerator.php', 'Query/MySqlQueryBuilder.php', 'Introspection/MySqlIntrospector.php'] as $file) {
+            $code = (string) file_get_contents("$source/$file");
+
+            // A backtick concatenated onto a name, a backtick-wrapped %s placeholder or a backtick-wrapped interpolation
+            expect(preg_match('/`\'\s*\.|\.\s*\'`|`%s`|`\$/', $code))->toBe(0, "$file quotes an identifier inline");
+        }
+    });
+});

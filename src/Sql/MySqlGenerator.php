@@ -307,12 +307,12 @@ class MySqlGenerator implements SqlGeneratorInterface
     }
 
     /**
-     * Quote an identifier with backticks.
+     * Quote an identifier through the driver's one quoting rule, MySqlIdentifier.
      */
     private function quote(
         string $identifier,
     ): string {
-        return '`' . $identifier . '`';
+        return MySqlIdentifier::quote($identifier);
     }
 
     /**

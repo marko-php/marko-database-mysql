@@ -171,6 +171,12 @@ function mariaDbLongtextConnection(
         {
             return false;
         }
+
+        public function quoteIdentifier(
+            string $identifier,
+        ): string {
+            return '"' . str_replace('"', '""', $identifier) . '"';
+        }
     };
 }
 
@@ -240,6 +246,12 @@ function createMockConnection(
         public function supportsReturning(): bool
         {
             return false;
+        }
+
+        public function quoteIdentifier(
+            string $identifier,
+        ): string {
+            return '"' . str_replace('"', '""', $identifier) . '"';
         }
     };
 }
@@ -753,6 +765,12 @@ describe('MySqlIntrospector', function (): void {
             {
                 return false;
             }
+
+            public function quoteIdentifier(
+                string $identifier,
+            ): string {
+                return '"' . str_replace('"', '""', $identifier) . '"';
+            }
         };
 
         new MySqlIntrospector($connection, 'testdb')->getColumns('products');
@@ -995,6 +1013,12 @@ describe('MySqlIntrospector', function (): void {
             {
                 return false;
             }
+
+            public function quoteIdentifier(
+                string $identifier,
+            ): string {
+                return '"' . str_replace('"', '""', $identifier) . '"';
+            }
         };
 
         $introspector = new MySqlIntrospector($connection, 'my_app_db');
@@ -1117,6 +1141,12 @@ describe('MySqlIntrospector', function (): void {
             public function supportsReturning(): bool
             {
                 return false;
+            }
+
+            public function quoteIdentifier(
+                string $identifier,
+            ): string {
+                return '"' . str_replace('"', '""', $identifier) . '"';
             }
         };
 
